@@ -1,0 +1,34 @@
+{
+  "name": "@cairn-kb/cli",
+  "version": "0.6.10",
+  "description": "Team knowledge for AI agents: agents propose, a human approves what lands.",
+  "license": "Apache-2.0",
+  "repository": "github:cairn-kb/cairn",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "bin": {
+    "cairn": "./src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "release": "bun scripts/release.ts",
+    "scrub": "bun scripts/scrub-check.ts . --gitleaks"
+  },
+  "dependencies": {
+    "@cairn-kb/protocol": "workspace:*",
+    "@anthropic-ai/sdk": "^0.121.0",
+    "@clack/prompts": "^1.7.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@opentui/core": "0.5.9",
+    "gray-matter": "^4.0.3",
+    "openai": "^7.8.0",
+    "web-tree-sitter": "0.25.10",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  }
+}

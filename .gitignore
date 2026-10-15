@@ -1,0 +1,12 @@
+node_modules
+dist/
+*.tsbuildinfo
+
+# Local knowledge store — a user's runtime data, not source
+.cairn/
+
+.DS_Store
+
+# cairn: machine-specific, do not commit
+.mcp.json
+.cursor/mcp.json

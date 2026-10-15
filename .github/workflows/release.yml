@@ -1,0 +1,93 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.6
+      # The wildcards are not decoration. OpenTUI picks its native library from
+      # eight per-platform optionalDependencies, `bun install` fetches only the
+      # HOST's, and Bun resolves that dispatch statically — so without them the
+      # two darwin targets fail to build on this linux runner.
+      - run: bun install --frozen-lockfile --os '*' --cpu '*'
+
+      # A tag can be pushed without ever opening a PR, so ci.yml is not
+      # guaranteed to have run against this commit. Without these two steps the
+      # release job will happily compile and publish a binary CI would have
+      # rejected — onto a stranger's machine, where the failure is expensive.
+      - run: bun test
+      # bun test does not typecheck; the separate step is not redundant.
+      - run: bunx tsc --noEmit
+
+      # The tag is the source of truth for the version — it is what stamps
+      # build-info.ts below. package.json is not read by anything, so a tag and
+      # package.json can disagree without anyone noticing. Checking it here
+      # turns "remember to bump" into a job that fails before publishing,
+      # rather than a wrong number a reader finds later.
+      - name: Check package.json matches the tag
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          declared=$(bun --print 'require("./package.json").version')
+          if [ "$tagged" != "$declared" ]; then
+            echo "package.json says $declared, tag says $tagged." >&2
+            echo "Bump package.json to $tagged and re-tag." >&2
+            exit 1
+          fi
+          echo "package.json and tag agree on $tagged"
+
+      - name: Stamp the build
+        run: |
+          cat > src/build-info.ts <<EOF
+          export const VERSION = "${GITHUB_REF_NAME#v}"
+          export const COMMIT = "$(git rev-parse --short HEAD)"
+          export const BUILT_AT = "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+          export const COMPILED = true
+          EOF
+
+      # The release notes ARE the changelog section. Extracted before the
+      # binaries are built so a missing entry fails the release early, without
+      # having built or published anything, and so the changelog cannot
+      # quietly rot: an entry nobody wrote is a release whose notes are
+      # visibly empty.
+      - name: Take the release notes from the changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { inside = 1; next }
+            inside && /^## \[/ { exit }
+            inside { print }
+          ' CHANGELOG.md > /tmp/notes.md
+          if [ ! -s /tmp/notes.md ]; then
+            echo "CHANGELOG.md has no section for $version." >&2
+            echo "Add a '## [$version] — <date>' entry and re-tag." >&2
+            exit 1
+          fi
+          echo "Release notes:"; cat /tmp/notes.md
+
+      - name: Build every target
+        run: |
+          mkdir -p dist
+          for target in darwin-arm64 darwin-x64 linux-x64; do
+            bun build --compile --minify \
+              --define 'process.env.OPENTUI_LIBC="glibc"' \
+              --target="bun-$target" \
+              src/cli.ts --outfile "dist/cairn-$target"
+          done
+          cd dist && sha256sum cairn-* > checksums.txt
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file /tmp/notes.md \
+            dist/cairn-darwin-arm64 dist/cairn-darwin-x64 \
+            dist/cairn-linux-x64 dist/checksums.txt

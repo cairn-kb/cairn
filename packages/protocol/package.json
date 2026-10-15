@@ -1,0 +1,24 @@
+{
+  "name": "@cairn-kb/protocol",
+  "version": "0.1.0",
+  "description": "The wire contract between the cairn CLI and a cairn team space.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cairn-kb/cairn.git",
+    "directory": "packages/protocol"
+  },
+  "exports": {
+    "./types": "./src/types.ts",
+    "./event-kinds": "./src/event-kinds.ts",
+    "./stats": "./src/stats.ts",
+    "./absence": "./src/absence.ts",
+    "./hash": "./src/hash.ts",
+    "./document-title": "./src/document-title.ts",
+    "./provenance": "./src/provenance.ts",
+    "./package.json": "./package.json"
+  },
+  "files": ["src", "README.md", "LICENSE", "NOTICE"],
+  "publishConfig": { "access": "public" }
+}

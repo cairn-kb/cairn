@@ -1,0 +1,367 @@
+import { afterEach, beforeEach, expect, test } from "bun:test"
+import { appendFile, mkdtemp, rename, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { notAdoptableMessage } from "@cairn-kb/protocol/event-kinds"
+import { EventLog } from "../src/events"
+import { FileStore } from "../src/store"
+import { proposal } from "./store-contract"
+import type { Claim } from "@cairn-kb/protocol/types"
+
+let root: string
+let store: FileStore
+
+const claim = (id: string, text: string): Claim => ({
+  id,
+  status: "pending",
+  claim: text,
+  body: "detail",
+  source: { author: "alice", agent: "cursor", repo: null, session: null },
+  created: "2026-08-26T09:00:00.000Z",
+  reviewed: null,
+  reviewer: null,
+  retracted: null,
+  overlaps: [],
+  cites: [],
+  abstract: null,
+  abstractBy: null,
+  tags: ["architecture"],
+})
+
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), "cairn-"))
+  store = new FileStore(root, new EventLog(root))
+  await store.init()
+})
+
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true })
+})
+
+test("put then get returns the claim", async () => {
+  await store.put(claim("a", "Billing uses Postgres"), "curate")
+  expect((await store.get("a"))?.claim).toBe("Billing uses Postgres")
+})
+
+test("get returns null for an unknown id", async () => {
+  expect(await store.get("nope")).toBeNull()
+})
+
+test("list filters by status", async () => {
+  await store.put(claim("a", "one"), "curate")
+  await store.put(claim("b", "two"), "curate")
+  expect((await store.list("pending")).length).toBe(2)
+  expect((await store.list("approved")).length).toBe(0)
+})
+
+test("put leaves exactly one file when claim.status changes without move()", async () => {
+  const c = claim("a", "one")
+  await store.put(c, "curate")
+  c.status = "approved"
+  await store.put(c, "curate")
+  expect((await store.list("pending")).length).toBe(0)
+  expect((await store.list("approved")).length).toBe(1)
+  expect((await store.get("a"))?.status).toBe("approved")
+})
+
+test("move relocates the claim and stamps reviewed", async () => {
+  await store.put(claim("a", "one"), "curate")
+  await store.move("a", "approved")
+  expect((await store.list("pending")).length).toBe(0)
+  const moved = await store.get("a")
+  expect(moved?.status).toBe("approved")
+  expect(moved?.reviewed).not.toBeNull()
+})
+
+test("search finds claims by word", async () => {
+  await store.put(claim("a", "Billing uses Postgres for invoices"), "curate")
+  await store.put(claim("b", "Frontend uses Vue"), "curate")
+  const hits = await store.search("postgres")
+  expect(hits.length).toBe(1)
+  expect(hits[0]!.id).toBe("a")
+})
+
+test("rebuildIndex reconstructs the index from files alone", async () => {
+  await store.put(claim("a", "Billing uses Postgres"), "curate")
+  const fresh = new FileStore(root)
+  await fresh.init()
+  expect(await fresh.rebuildIndex()).toEqual({ claims: 1, documents: 0 })
+  expect((await fresh.search("postgres")).length).toBe(1)
+})
+
+test("propose returns the stored claim, and the store owns the id", async () => {
+  const created = await store.propose({
+    claim: "bun test does not typecheck",
+    body: "run tsc separately",
+    abstract: "Settles the command. Does not settle performance.",
+    source: { author: "alice", agent: "cursor", repo: null, session: null },
+    overlaps: [],
+    cites: [],
+    tags: ["testing"],
+  })
+  expect(created.id).toBeTruthy()
+  expect(created.status).toBe("pending")
+  expect(await store.get(created.id)).toEqual(created)
+})
+
+test("review approves and returns the updated claim", async () => {
+  const c = await store.propose({
+    claim: "one",
+    body: "b",
+    abstract: "a",
+    source: { author: "r", agent: "c", repo: null, session: null },
+    overlaps: [],
+    cites: [],
+    tags: [],
+  })
+  const reviewed = await store.review(c.id, "approve")
+  expect(reviewed!.status).toBe("approved")
+})
+
+test("review with edits applies them and still approves", async () => {
+  const c = await store.propose({
+    claim: "one",
+    body: "b",
+    abstract: "a",
+    source: { author: "r", agent: "c", repo: null, session: null },
+    overlaps: [],
+    cites: [],
+    tags: [],
+  })
+  const reviewed = await store.review(c.id, "edit", { claim: "one, improved" })
+  expect(reviewed!.claim).toBe("one, improved")
+  expect(reviewed!.status).toBe("approved")
+})
+
+test("reviewing an unknown id is null, not a throw", async () => {
+  expect(await store.review("missing", "approve")).toBeNull()
+})
+
+// --- one content write, one event -----------------------------------------
+//
+// `HttpStore.put` hardcoded `kind: "curate"`, so `cairn abstracts` recorded a
+// curate — a human curated something a model wrote — and then appended its own
+// `generate` beside it. One write, two events, one of them false. FileStore
+// recorded neither, because `put` is also its own internal write primitive and
+// logging there would double-count every propose and review.
+
+test("put records exactly one event, of the kind the caller named", async () => {
+  const log = new EventLog(root)
+  const s = new FileStore(root, log)
+  await s.init()
+  await s.put(claim("a", "Billing uses Postgres"), "generate")
+  const events = (await log.all()).filter((e) => e.id === "a")
+  expect(events.map((e) => e.kind)).toEqual(["generate"])
+})
+
+test("curate and generate are distinguishable in the log", async () => {
+  const log = new EventLog(root)
+  const s = new FileStore(root, log)
+  await s.init()
+  await s.put(claim("a", "one"), "generate")
+  await s.put(claim("a", "one"), "curate")
+  expect((await log.all()).filter((e) => e.id === "a").map((e) => e.kind))
+    .toEqual(["generate", "curate"])
+})
+
+test("propose does not also record a content write", async () => {
+  // put is FileStore's internal write primitive as well as a Store method.
+  // Logging on every call would put a spurious curate/generate beside every
+  // proposal and every review.
+  const log = new EventLog(root)
+  const s = new FileStore(root, log)
+  await s.init()
+  const c = await s.propose({
+    claim: "Billing uses Postgres", body: "b", abstract: "", tags: [],
+    source: { author: "me", agent: "test", repo: null, session: null }, overlaps: [], cites: [],
+  })
+  expect((await log.all()).filter((e) => e.id === c.id).map((e) => e.kind)).toEqual(["propose"])
+})
+
+test("review records the decision and nothing else", async () => {
+  const log = new EventLog(root)
+  const s = new FileStore(root, log)
+  await s.init()
+  const c = await s.propose({
+    claim: "Billing uses Postgres", body: "b", abstract: "", tags: [],
+    source: { author: "me", agent: "test", repo: null, session: null }, overlaps: [], cites: [],
+  })
+  await s.review(c.id, "approve")
+  expect((await log.all()).filter((e) => e.id === c.id).map((e) => e.kind))
+    .toEqual(["propose", "approve"])
+})
+
+test("rebuildIndex reindexes documents as well as claims", async () => {
+  const store = new FileStore(root, new EventLog(root))
+  await store.init()
+  const { document } = await store.importDocument({ title: "T", text: "findable text", source: "a.md" })
+  // Simulate the drift rebuild exists for: the file on disk is the truth, the
+  // index is a cache, and a cache that silently disagrees is what this repairs.
+  ;(store as unknown as { db: { run(sql: string): void } }).db.run("DELETE FROM documents")
+  expect(await store.searchDocuments("findable")).toEqual([])
+  // The counts come back named, and a document must be counted as a document:
+  // reporting the pair as one sum is what let `cairn rebuild` print "22
+  // claims" for a space holding none.
+  expect(await store.rebuildIndex()).toEqual({ claims: 0, documents: 1 })
+  expect((await store.searchDocuments("findable")).map((d) => d.id)).toEqual([document.id])
+})
+
+// --- adoptImport coverage the generic Store contract cannot exercise ------
+//
+// Both tests below need a real filesystem underneath the seam — one corrupts
+// events.jsonl directly, the other inspects another claim's overlaps array —
+// which is exactly what test/store-contract.ts's cases are not allowed to do
+// (they run against HttpStore too, over a network, with no file to reach
+// into). FileStore-only coverage belongs here instead.
+
+test("adoptImport refuses rather than silently deleting a claim when its event log is damaged", async () => {
+  const log = new EventLog(root)
+  const s = new FileStore(root, log)
+  await s.init()
+  const { claim: imported } = await s.importClaim({
+    claim: "Using MinerU", body: "It wants Python 3.10.", abstract: "", tags: ["imported"],
+    source: { author: "me", agent: "test", repo: null, session: null }, overlaps: [], cites: [],
+  })
+  // Simulate the damage a crash mid-`appendFile`, or two processes writing at
+  // once, leaves behind: a line that will not parse as JSON. `importClaim`
+  // above already wrote line 1 (its own `import` event), so this lands on
+  // line 2.
+  const logPath = join(root, "events.jsonl")
+  await appendFile(logPath, `{"kind":"generate","id":"${imported.id}","at":"broken\n`, "utf-8")
+
+  const err = await s.adoptImport(imported.id).then(
+    () => null,
+    (e: unknown) => e as Error,
+  )
+  expect(err).not.toBeNull()
+  expect(err!.message).toContain(logPath)
+  expect(err!.message).toContain("line 2")
+
+  // Fails CLOSED: the claim must still be exactly what it was, and no
+  // document must exist from a delete that should never have happened.
+  expect((await s.get(imported.id))?.status).toBe("approved")
+  expect(await s.listDocuments()).toEqual([])
+})
+
+test("adoptImport refuses an import a human moved back to the queue by hand and approved", async () => {
+  // The claim this guard specifically exists to catch, and the one the
+  // standing positive control (drop "approve" from UNADOPTABLE_KINDS) needs
+  // to fail: content that entered through `import` —
+  // so it still wears whatever tag the CLI selected it on — and was later
+  // approved by a human WITHOUT ever going through `propose`. Its event
+  // history ends up exactly `["import", "approve"]`, with no `propose`
+  // event to save it if `approve` is ever dropped from UNADOPTABLE_KINDS.
+  //
+  // Constructed by moving the FILE directly with `rename`, never through
+  // `store.move()`: status is owned by the containing directory and
+  // imported files are explicitly meant to be hand-editable (`read()`
+  // above trusts the directory over the frontmatter for exactly this
+  // reason), so a person dragging a file from approved/ into inbox/ needs no
+  // code path at all. Depending on no `move()` behaviour here is
+  // deliberate: an earlier version of this coverage lived in the shared
+  // contract as `store.move(id, "pending")` behind a reachability probe, and
+  // if FileStore.move were ever changed to refuse "pending" the way
+  // HttpStore.move already does — the exact parity move this codebase made
+  // once already for `review` and `AlreadyResolvedError` — that probe would
+  // start returning false and the case would go green while asserting
+  // nothing, even though the hand-edit path it exists to guard would still
+  // be wide open. Moving the file with `rename` sidesteps that: this test
+  // cannot be silenced by a change to `move()`.
+  const { claim: imported } = await store.importClaim({
+    claim: "Using MinerU", body: "It wants Python 3.10.", abstract: "", tags: ["imported"],
+    source: { author: "me", agent: "test", repo: null, session: null }, overlaps: [], cites: [],
+  })
+  await rename(join(root, "approved", `${imported.id}.md`), join(root, "inbox", `${imported.id}.md`))
+  // The setup materialised: if it hadn't, the case below would be a no-op
+  // dressed as coverage.
+  expect((await store.get(imported.id))?.status).toBe("pending")
+
+  await store.review(imported.id, "approve")
+  const err = await store.adoptImport(imported.id).then(
+    () => null,
+    (e: unknown) => e as Error,
+  )
+  expect(err).not.toBeNull()
+  expect(err!.message).toBe(notAdoptableMessage(imported.id, "judged"))
+  // The guard is only worth having if the claim survives it.
+  expect((await store.get(imported.id))?.status).toBe("approved")
+})
+
+test("adoptImport refuses a claim whose history never mentions an import", async () => {
+  // The positive half of the guard, and the only place it can be exercised:
+  // nothing on the `Store` seam creates a claim without either an `import` or
+  // a `propose` event, so a claim carrying neither has to be built underneath
+  // the seam. `put` persists and indexes the file and records exactly one
+  // `generate` event — the history of a claim that, as far as cairn can tell,
+  // arrived from nowhere.
+  //
+  // A deny list alone would ADOPT this: nothing on it is forbidden. That is
+  // the drift the `import` requirement exists to stop, and the reason the
+  // guard is two conditions rather than one.
+  const c = { ...claim("c-nowhere", "arrived from nowhere"), status: "approved" as const }
+  await store.put(c, "generate")
+  // The setup materialised: without this the assertion below could pass on a
+  // claim that was never there at all, which `adoptImport` refuses with
+  // `unknownClaimMessage` — a different sentence, and one that would satisfy a
+  // weaker assertion than the one below.
+  expect((await store.get(c.id))?.claim).toBe("arrived from nowhere")
+
+  const err = await store.adoptImport(c.id).then(
+    () => null,
+    (e: unknown) => e as Error,
+  )
+  expect(err).not.toBeNull()
+  expect(err!.message).toBe(notAdoptableMessage(c.id, "not-imported"))
+  // The two refusals are different sentences, not one sentence twice.
+  expect(err!.message).not.toBe(notAdoptableMessage(c.id, "judged"))
+  expect((await store.get(c.id))?.status).toBe("approved")
+  expect(await store.listDocuments()).toEqual([])
+})
+
+test("adoptImport removes the adopted claim's id from every other claim's overlaps", async () => {
+  const { claim: imported } = await store.importClaim({
+    claim: "Using MinerU", body: "It wants Python 3.10.", abstract: "", tags: ["imported"],
+    source: { author: "me", agent: "test", repo: null, session: null }, overlaps: [], cites: [],
+  })
+  const pointer = await store.propose({
+    claim: "a claim that overlaps the imported one", body: "b", abstract: "", tags: [],
+    source: { author: "me", agent: "test", repo: null, session: null },
+    overlaps: [imported.id], cites: [],
+  })
+  // The precondition: if `propose` ever stopped recording overlaps, the
+  // assertion below would pass vacuously on an array that was already empty.
+  expect(pointer.overlaps).toEqual([imported.id])
+  await store.adoptImport(imported.id)
+  // The hosted service is held to the same requirement: an overlap pointing at a claim that no longer exists must
+  // not dangle.
+  expect((await store.get(pointer.id))?.overlaps).toEqual([])
+})
+
+test("FileStore lists a retracted claim from its own directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cairn-status-"))
+  try {
+    const store = new FileStore(root, new EventLog(root))
+    await store.init()
+    const claim = await store.propose(proposal("a sentence"))
+    await store.move(claim.id, "retracted")
+    expect((await store.list("retracted")).map((c) => c.id)).toEqual([claim.id])
+    expect(await store.list("approved")).toEqual([])
+    expect((await store.get(claim.id))?.status).toBe("retracted")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("FileStore refuses a mine filter rather than answering with the whole queue", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cairn-mine-"))
+  try {
+    const store = new FileStore(root, new EventLog(root))
+    await store.init()
+    await store.propose(proposal("a sentence"))
+    // The positive control: the same call without the filter answers.
+    expect((await store.list("pending")).length).toBe(1)
+    await expect(store.list("pending", { mine: true })).rejects.toThrow(/team space/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

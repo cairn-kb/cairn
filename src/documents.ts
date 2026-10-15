@@ -1,0 +1,102 @@
+import matter from "gray-matter"
+import { basename, relative, sep } from "node:path"
+import { makeId } from "./claims"
+import { titleOf as titleFrom } from "@cairn-kb/protocol/document-title"
+import type { Document } from "@cairn-kb/protocol/types"
+
+/** How much of a document one `team_knowledge_read` returns. Characters, not
+ *  tokens, which keeps this independent of any one model's tokenizer. */
+export const READ_WINDOW = 4000
+/** How much of a document a search hit shows. */
+export const PREVIEW_CHARS = 240
+
+/** Built exactly as a claim id is, then prefixed. The prefix is load-bearing:
+ *  it is how a read path tells the two nouns apart from an id alone. */
+export function makeDocId(title: string, now: Date): string {
+  return `doc-${makeId(title, now)}`
+}
+
+/** The CLI's fallback is the file's basename, extension included. See
+ *  packages/protocol/src/document-title.ts for why the hosted service's is not. */
+export function titleOf(text: string, path: string): string {
+  return titleFrom(text, basename(path))
+}
+
+/** A frontmatter value cairn will use, or nothing. Anything that is not a
+ *  non-empty string falls through to the next candidate rather than becoming
+ *  the string "undefined" or "[object Object]" in a title. */
+function str(v: unknown): string {
+  return typeof v === "string" ? v.trim() : ""
+}
+
+/** gray-matter throws on a fence it cannot parse. A half-written `---` in a
+ *  corpus is ordinary, so such a file imports whole — worse than parsed, and
+ *  far better than not imported at all. */
+function readFrontmatter(raw: string): { data: Record<string, unknown>; content: string } {
+  try {
+    const { data, content } = matter(raw)
+    return { data, content }
+  } catch {
+    return { data: {}, content: raw }
+  }
+}
+
+/**
+ * What an incoming file becomes. Frontmatter is metadata, not body: imported
+ * raw, a document whose fence carries its only summary reached an agent as a
+ * filename and 240 characters of YAML, which is the whole surface search ranks
+ * on. Import-path only — `DocumentInput` is unchanged.
+ */
+export function parseImport(raw: string, path: string): { title: string; text: string } {
+  const { data, content } = readFrontmatter(raw)
+  // A hand-written `description` is a better summary than anything cairn could
+  // produce, so it leads the body rather than living in a field of its own: it
+  // is then what a preview shows and what the index searches.
+  const parts = [str(data.description), content.trim()].filter((p) => p !== "")
+  return {
+    title: str(data.title) || str(data.name) || titleOf(content, path),
+    text: parts.join("\n\n"),
+  }
+}
+
+/** The path a re-import matches on: relative to the directory that was
+ *  imported, POSIX-separated so the same corpus imported on two machines
+ *  produces the same source. */
+export function normalizeSource(dir: string, path: string): string {
+  return relative(dir, path).split(sep).join("/")
+}
+
+export function previewOf(doc: Document): string {
+  return `${doc.title} — ${doc.text.slice(0, PREVIEW_CHARS)}`
+}
+
+export function windowOf(
+  text: string,
+  offset: number,
+): { text: string; offset: number; length: number; nextOffset: number | null } {
+  const start = Math.max(0, Math.min(offset, text.length))
+  const slice = text.slice(start, start + READ_WINDOW)
+  const end = start + slice.length
+  return { text: slice, offset: start, length: text.length, nextOffset: end < text.length ? end : null }
+}
+
+export function serializeDocument(doc: Document): string {
+  const { text, ...front } = doc
+  return matter.stringify(text, front)
+}
+
+export function parseDocument(raw: string): Document {
+  const { data, content } = matter(raw)
+  return {
+    id: String(data.id),
+    title: String(data.title),
+    text: content.trim(),
+    // `?? null` and not `String(...)`: an absent source must stay null, or an
+    // adopted document matches nothing and is imported a second time.
+    source: data.source ?? null,
+    // gray-matter's YAML parser turns unquoted ISO timestamps into Dates.
+    created: new Date(data.created).toISOString(),
+    updated: new Date(data.updated).toISOString(),
+    hash: String(data.hash),
+  }
+}
