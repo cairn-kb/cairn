@@ -52,3 +52,23 @@ takes extra patterns to refuse, one regular expression per line, with
   will add it.
 - Changing anything in `packages/protocol` changes the contract with hosted
   team spaces. Say so in the description; it needs a maintainer's review.
+
+## Refresh a pinned action
+
+Workflows pin every action to a full commit SHA, with its version tag in a
+comment: `uses: owner/action@<sha> # vX.Y.Z`. A tag can be moved; a commit
+cannot. To move a pin to a newer release:
+
+    gh api repos/<owner>/<action>/git/ref/tags/<vX.Y.Z> --jq .object
+
+If `type` is `commit`, `sha` is the pin. If it is `tag`, the tag is annotated
+and that `sha` is the tag object, not the commit — dereference it until you
+reach a commit:
+
+    gh api repos/<owner>/<action>/git/tags/<sha> --jq .object
+
+Update the SHA and the `# vX.Y.Z` comment together, and commit with
+`git commit -s` like any other change.
+
+Dependabot is not enabled: its commits carry no sign-off, so its pull requests
+cannot pass the DCO check.
