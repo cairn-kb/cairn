@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-15
+
 - First open-source release, under Apache-2.0. Install with
   `curl -fsSL https://raw.githubusercontent.com/cairn-kb/cairn/main/install.sh | sh`.
 
