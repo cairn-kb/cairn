@@ -126,7 +126,7 @@ export const COMMAND_FLAGS: Record<string, readonly string[]> = {
   doctor: ["--json"],
   import: [],
   "adopt-imports": [],
-  abstracts: ["--all", "--dry-run"],
+  abstracts: ["--all", "--dry-run", "--force"],
   status: [],
   stats: [],
   review: ["--json", "--mine"],
@@ -850,10 +850,23 @@ export function formatFailures(failures: BackfillResult["failures"]): string[] {
 export async function runBackfill(
   store: Store,
   generate: (c: Claim) => Promise<string>,
-  opts: { all?: boolean; dryRun?: boolean; onProgress?: (done: number, total: number) => void } = {},
+  opts: {
+    all?: boolean
+    /** Only meaningful with `all`: also regenerates abstracts a human or an
+     *  agent wrote. Without it, `all` stops at `"generated"` and missing —
+     *  the two provenances nobody has put their name to. */
+    force?: boolean
+    dryRun?: boolean
+    onProgress?: (done: number, total: number) => void
+  } = {},
 ): Promise<BackfillResult> {
   const approved = await store.list("approved")
-  const targets = opts.all ? approved : approved.filter((c) => !c.abstract?.trim())
+  const missing = (c: Claim) => !c.abstract?.trim()
+  const targets = !opts.all
+    ? approved.filter(missing)
+    : opts.force
+      ? approved
+      : approved.filter((c) => c.abstractBy === "generated" || missing(c))
   let generated = 0
   let failed = 0
   const written: BackfillResult["written"] = []
@@ -2061,6 +2074,7 @@ export async function main(argv: string[]): Promise<void> {
     case "abstracts": {
       const all = rest.includes("--all")
       const dryRun = rest.includes("--dry-run")
+      const force = rest.includes("--force")
       const cfg = await readConfig(ROOT)
       const gate = await gateGeneration(resolveGeneration(cfg?.generation ?? null, process.env), {
         isTty: Boolean(process.stdin.isTTY),
@@ -2083,7 +2097,7 @@ export async function main(argv: string[]): Promise<void> {
             process.stdout.write(`\r${progressLine(done, total, "written")}`)
           }
         : undefined
-      const r = await runBackfill(await openStore(), (c) => generateAbstract(c, resolved), { all, dryRun, onProgress })
+      const r = await runBackfill(await openStore(), (c) => generateAbstract(c, resolved), { all, force, dryRun, onProgress })
       if (onProgress) process.stdout.write("\r\x1b[K")
       // `r.targets`, not the two counters: a rate limit on the first claim
       // leaves both at zero and this sentence would be false about a space
@@ -2374,7 +2388,11 @@ export async function main(argv: string[]): Promise<void> {
       console.log(
         ui.dim("  adopt-imports                           convert claims that cairn imported into documents"),
       )
-      console.log(ui.dim("  abstracts [--all] [--dry-run]           write the abstracts that are missing"))
+      console.log(
+        ui.dim(
+          "  abstracts [--all --force] [--dry-run]   write the abstracts that are missing",
+        ),
+      )
       console.log(ui.dim("  status                                  queue, reads, and missing abstracts"))
       console.log(ui.dim("  stats                                   the raw counts as JSON"))
       console.log(ui.dim("  search <text> [--all] [--json]          find what the team knows"))

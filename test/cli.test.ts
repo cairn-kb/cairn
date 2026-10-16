@@ -949,12 +949,17 @@ test("status does not mention abstracts when every approved claim has one", asyn
 
 // --- backfilling abstracts ------------------------------------------------
 
-const approvedClaim = async (id: string, abstract: string | null) => {
+const approvedClaim = async (
+  id: string,
+  abstract: string | null,
+  abstractBy?: Claim["abstractBy"],
+) => {
   const c: Claim = {
     id, status: "approved", claim: `Claim ${id}`, body: "detail",
     source: { author: "r", agent: "import", repo: null, session: null },
     created: "2026-08-27T09:00:00.000Z", reviewed: "2026-08-27T09:00:00.000Z",
-    reviewer: "r", retracted: null, overlaps: [], cites: [], abstract, abstractBy: abstract ? "human" : null, tags: [],
+    reviewer: "r", retracted: null, overlaps: [], cites: [], abstract,
+    abstractBy: abstractBy ?? (abstract ? "human" : null), tags: [],
   }
   await store.put(c, "curate")
 }
@@ -1098,13 +1103,91 @@ test("dry run reports without writing", async () => {
   expect((await store.get("needs"))?.abstract).toBeNull()
 })
 
-test("--all regenerates abstracts that already exist", async () => {
-  await approvedClaim("has", "Old. Stale.")
+test("--all regenerates a machine-generated abstract", async () => {
+  await approvedClaim("has", "Old. Stale.", "generated")
   const r = await runBackfill(store, async () => "Fresh. Not everything.", {
     all: true,
   })
   expect(r.generated).toBe(1)
   expect((await store.get("has"))?.abstract).toBe("Fresh. Not everything.")
+})
+
+test("--all still fills in a missing abstract", async () => {
+  await approvedClaim("needs", null)
+  const r = await runBackfill(store, async () => "Fresh. Not everything.", {
+    all: true,
+  })
+  expect(r.generated).toBe(1)
+  expect((await store.get("needs"))?.abstract).toBe("Fresh. Not everything.")
+})
+
+test("--all leaves a human-written abstract alone", async () => {
+  await approvedClaim("has", "A person wrote this.", "human")
+  const r = await runBackfill(store, async () => "Fresh. Not everything.", {
+    all: true,
+  })
+  expect(r.targets).toBe(0)
+  expect((await store.get("has"))?.abstract).toBe("A person wrote this.")
+})
+
+test("--all leaves an agent-written abstract alone", async () => {
+  await approvedClaim("has", "An agent wrote this.", "agent")
+  const r = await runBackfill(store, async () => "Fresh. Not everything.", {
+    all: true,
+  })
+  expect(r.targets).toBe(0)
+  expect((await store.get("has"))?.abstract).toBe("An agent wrote this.")
+})
+
+test("--all only regenerates the generated and missing ones out of a mix", async () => {
+  await approvedClaim("human", "A person wrote this.", "human")
+  await approvedClaim("agent", "An agent wrote this.", "agent")
+  await approvedClaim("generated", "Old. Stale.", "generated")
+  await approvedClaim("missing", null)
+  const r = await runBackfill(store, async () => "Fresh. Not everything.", {
+    all: true,
+  })
+  expect(r.generated).toBe(2)
+  expect((await store.get("human"))?.abstract).toBe("A person wrote this.")
+  expect((await store.get("agent"))?.abstract).toBe("An agent wrote this.")
+  expect((await store.get("generated"))?.abstract).toBe("Fresh. Not everything.")
+  expect((await store.get("missing"))?.abstract).toBe("Fresh. Not everything.")
+})
+
+test("--all --force restores regenerate-everything, including human and agent abstracts", async () => {
+  await approvedClaim("human", "A person wrote this.", "human")
+  await approvedClaim("agent", "An agent wrote this.", "agent")
+  const r = await runBackfill(store, async () => "Fresh. Not everything.", {
+    all: true,
+    force: true,
+  })
+  expect(r.generated).toBe(2)
+  expect((await store.get("human"))?.abstract).toBe("Fresh. Not everything.")
+  expect((await store.get("agent"))?.abstract).toBe("Fresh. Not everything.")
+})
+
+test("--force without --all has no effect — the default already protects every existing abstract", async () => {
+  await approvedClaim("has", "A person wrote this.", "human")
+  const r = await runBackfill(store, async () => "Fresh. Not everything.", {
+    force: true,
+  })
+  expect(r.targets).toBe(0)
+  expect((await store.get("has"))?.abstract).toBe("A person wrote this.")
+})
+
+test("--all --dry-run previews the same subset as --all would write", async () => {
+  await approvedClaim("human", "A person wrote this.", "human")
+  await approvedClaim("generated", "Old. Stale.", "generated")
+  const r = await runBackfill(store, async () => "Fresh. Not everything.", {
+    all: true,
+    dryRun: true,
+  })
+  expect(r.targets).toBe(1)
+  expect(r.written).toEqual([
+    { id: "generated", claim: "Claim generated", abstract: "Fresh. Not everything." },
+  ])
+  // Still a preview: nothing was written.
+  expect((await store.get("generated"))?.abstract).toBe("Old. Stale.")
 })
 
 test("status reports unreviewed generated abstracts", async () => {
@@ -3111,7 +3194,7 @@ test("--max-tokens is parsed, and junk is dropped rather than sent as NaN", () =
 
 test("a command's own flags are accepted", () => {
   expect(unknownFlags("init", ["--project", "--dry-run", "--yes"])).toEqual([])
-  expect(unknownFlags("abstracts", ["--all", "--dry-run"])).toEqual([])
+  expect(unknownFlags("abstracts", ["--all", "--dry-run", "--force"])).toEqual([])
   expect(unknownFlags("review", ["--json"])).toEqual([])
   expect(unknownFlags("review", ["--json", "--mine"])).toEqual([])
 })
