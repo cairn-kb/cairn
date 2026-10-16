@@ -32,3 +32,20 @@ test("the published protocol package carries its licence", () => {
   expect(readFileSync(join(pkgDir, "LICENSE"), "utf-8")).toContain("Apache License")
   expect(readFileSync(join(pkgDir, "NOTICE"), "utf-8")).toContain("cairn")
 })
+
+test("the root package declares a range that covers the protocol's version", () => {
+  // The root dependency has to be a published semver range, not
+  // `workspace:*`, so an external consumer resolves it from the registry.
+  // If it drifts out of range, `bun install` silently swaps the local
+  // workspace link for a stale registry download instead of failing.
+  const root = resolve(import.meta.dir, "..")
+  const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf-8")) as {
+    dependencies: Record<string, string>
+  }
+  const protocolPkg = JSON.parse(readFileSync(join(root, "packages", "protocol", "package.json"), "utf-8")) as {
+    version: string
+  }
+  const range = rootPkg.dependencies["@cairn-kb/protocol"]
+  expect(range).toBeDefined()
+  expect(Bun.semver.satisfies(protocolPkg.version, range!)).toBe(true)
+})
