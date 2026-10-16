@@ -7,7 +7,9 @@
 - `cairn abstracts --all` no longer overwrites an abstract a person wrote in
   `cairn curate` or an agent wrote directly. It now regenerates only
   machine-generated and missing abstracts; pass `--force` alongside `--all`
-  to also regenerate the ones a human or an agent wrote.
+  to also regenerate the ones a human or an agent wrote — or an older
+  abstract with no recorded provenance at all, which is also left alone by
+  default since unknown provenance may be a person's writing.
 
 ## [0.7.0] — 2026-10-15
 

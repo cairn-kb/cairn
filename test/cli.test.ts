@@ -1139,6 +1139,37 @@ test("--all leaves an agent-written abstract alone", async () => {
   expect((await store.get("has"))?.abstract).toBe("An agent wrote this.")
 })
 
+test("--all leaves a legacy abstract alone — a real abstract with no recorded abstractBy", async () => {
+  // A claim file written before `abstractBy` existed parses with
+  // `abstractBy: null` even though it already carries real abstract text
+  // (`claims.ts`'s `abstractBy: data.abstractBy ?? null`). `approvedClaim`
+  // can't express that combination — it infers `human` whenever an abstract
+  // is given — so this claim is built directly.
+  const legacy: Claim = {
+    id: "has", status: "approved", claim: "Claim has", body: "detail",
+    source: { author: "r", agent: "import", repo: null, session: null },
+    created: "2026-08-27T09:00:00.000Z", reviewed: "2026-08-27T09:00:00.000Z",
+    reviewer: "r", retracted: null, overlaps: [], cites: [], tags: [],
+    abstract: "Written before abstractBy existed.", abstractBy: null,
+  }
+  await store.put(legacy, "curate")
+
+  // Unknown provenance may be a person's writing, so `--all` treats it the
+  // same as `human` or `agent`: protected. Only `--force` regenerates it.
+  const r = await runBackfill(store, async () => "Fresh. Not everything.", {
+    all: true,
+  })
+  expect(r.targets).toBe(0)
+  expect((await store.get("has"))?.abstract).toBe("Written before abstractBy existed.")
+
+  const forced = await runBackfill(store, async () => "Fresh. Not everything.", {
+    all: true,
+    force: true,
+  })
+  expect(forced.generated).toBe(1)
+  expect((await store.get("has"))?.abstract).toBe("Fresh. Not everything.")
+})
+
 test("--all only regenerates the generated and missing ones out of a mix", async () => {
   await approvedClaim("human", "A person wrote this.", "human")
   await approvedClaim("agent", "An agent wrote this.", "agent")
