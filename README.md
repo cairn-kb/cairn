@@ -219,8 +219,10 @@ never written to disk.
 still calls the model for every claim, so it spends tokens, and it needs a
 model configured. **`--all` regenerates every machine-written abstract**, not
 just the missing ones, and marks every one of them generated — but it leaves
-alone an abstract an agent wrote or a person wrote in `cairn curate`. Add
-`--force` to regenerate those too.
+alone an abstract an agent wrote, a person wrote in `cairn curate`, or one
+with no recorded provenance (an older claim, written before cairn tracked
+who wrote an abstract) — unknown provenance may be a person's writing too.
+Add `--force` to regenerate those as well.
 
 Generated abstracts are marked as generated and nobody has reviewed them —
 `cairn status` says how many, and `cairn curate` is where you clear them:

@@ -2390,7 +2390,7 @@ export async function main(argv: string[]): Promise<void> {
       )
       console.log(
         ui.dim(
-          "  abstracts [--all --force] [--dry-run]   write the abstracts that are missing",
+          "  abstracts [--all [--force]][--dry-run]  fill missing abstracts; --all also redoes generated ones, --force all of them",
         ),
       )
       console.log(ui.dim("  status                                  queue, reads, and missing abstracts"))
