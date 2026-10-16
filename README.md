@@ -217,9 +217,10 @@ never written to disk.
 `cairn doctor` reports the model that will actually be used, never the key.
 `cairn abstracts --dry-run` shows what it would write without saving it — it
 still calls the model for every claim, so it spends tokens, and it needs a
-model configured. **`--all` regenerates the abstract of every approved
-claim**, not just the missing ones — including abstracts an agent wrote or a
-person wrote in `cairn curate` — and marks every one of them generated.
+model configured. **`--all` regenerates every machine-written abstract**, not
+just the missing ones, and marks every one of them generated — but it leaves
+alone an abstract an agent wrote or a person wrote in `cairn curate`. Add
+`--force` to regenerate those too.
 
 Generated abstracts are marked as generated and nobody has reviewed them —
 `cairn status` says how many, and `cairn curate` is where you clear them:

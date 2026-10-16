@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `cairn abstracts --all` no longer overwrites an abstract a person wrote in
+  `cairn curate` or an agent wrote directly. It now regenerates only
+  machine-generated and missing abstracts; pass `--force` alongside `--all`
+  to also regenerate the ones a human or an agent wrote.
+
 ## [0.7.0] — 2026-10-15
 
 - First open-source release, under Apache-2.0. Install with
