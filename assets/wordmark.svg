@@ -5,8 +5,8 @@
   <path d="M 20.83 33.82 C 19.79 31.77, 27.06 31.51, 30.99 31.20 C 44.94 31.63, 49.88 31.68, 49.88 33.87 C 49.34 38.77, 42.62 38.51, 36.32 38.51 C 26.39 38.38, 20.83 38.36, 20.83 33.72 Z" fill="#56646E"/>
   <path d="M 23.44 26.44 C 23.54 23.60, 27.45 23.11, 32.63 23.04 C 34.96 23.45, 38.92 22.76, 38.92 25.73 C 39.60 29.98, 36.01 30.68, 30.82 30.68 C 26.37 30.36, 23.44 29.86, 23.44 26.19 Z" fill="#66757F"/>
   <path d="M 24.56 12.62 C 23.90 10.67, 27.06 10.04, 33.17 10.00 C 38.20 10.33, 41.47 9.69, 41.47 13.22 C 40.52 17.45, 37.07 16.92, 31.53 16.92 C 27.42 16.58, 24.56 17.06, 24.56 12.51 Z" fill="#E0A945" transform="rotate(-9 32.8 13)"/>
-  <!-- Letters set apart, like stones placed with intention. Outline this text
-       before using it where the font may not resolve. -->
-  <text x="76" y="44" font-family="'Avenir Next', Avenir, ui-sans-serif, sans-serif"
-        font-size="34" font-weight="600" letter-spacing="4" fill="#3A464F">cairn</text>
+  <!-- Set in Schibsted Grotesk, as on cairn-kb.dev. Outline this text before using it
+       where the font may not resolve. -->
+  <text x="76" y="44" font-family="'Schibsted Grotesk', 'Helvetica Neue', Arial, sans-serif"
+        font-size="38" font-weight="700" letter-spacing="-0.4" fill="#101214">cairn</text>
 </svg>

@@ -1,8 +1,13 @@
 <p align="center">
-  <img src="assets/banner.png" alt="cairn — shared team knowledge for AI agents" width="900">
+  <a href="https://cairn-kb.dev">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.png">
+      <img src="assets/banner-light.png" alt="cairn: shared knowledge for your coding agents, approved by your team" width="900">
+    </picture>
+  </a>
 </p>
 
-# cairn — team knowledge with a review gate
+# cairn — shared knowledge for your coding agents, approved by your team
 
 Agents read shared team knowledge and propose additions. A human approves what
 lands. Nothing an agent proposes is visible to other agents until it is
