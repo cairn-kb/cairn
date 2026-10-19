@@ -281,6 +281,11 @@ export async function runMigration(
       title: doc.title,
       text: doc.text,
       source: doc.source,
+      // Carried straight through, including when absent. Dropping `generated`
+      // here would launder a machine-written document into one the target
+      // space records as a human's, and the same is true of `repo`.
+      generated: doc.generated,
+      repo: doc.repo,
     })
     docIds.set(doc.id, document.id)
     if (outcome === "created") documents++

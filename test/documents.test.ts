@@ -87,6 +87,39 @@ test("a document with no source round-trips as null, not as the string 'null'", 
   expect(parseDocument(serializeDocument(d)).source).toBeNull()
 })
 
+test("a document with generated and repo round-trips exactly", () => {
+  const d = doc({ generated: true, repo: "app" })
+  expect(parseDocument(serializeDocument(d))).toEqual(d)
+})
+
+test("a document without generated and repo round-trips without them", () => {
+  const d = doc()
+  const parsed = parseDocument(serializeDocument(d))
+  expect(parsed).toEqual(d)
+  expect("generated" in parsed).toBe(false)
+  expect("repo" in parsed).toBe(false)
+})
+
+test("a file written before this change has no generated or repo keys, and parses without them", () => {
+  // The literal shape a pre-existing file on disk holds: no `generated` or
+  // `repo` key in its frontmatter at all, because it was written before
+  // either field existed.
+  const raw = `---
+id: doc-legacy
+title: Legacy
+source: legacy.md
+created: 2026-01-01T00:00:00.000Z
+updated: 2026-01-01T00:00:00.000Z
+hash: legacyhash
+---
+
+Legacy body text.
+`
+  const parsed = parseDocument(raw)
+  expect("generated" in parsed).toBe(false)
+  expect("repo" in parsed).toBe(false)
+})
+
 test("frontmatter is metadata, not body: an imported file arrives parsed", () => {
   // A memory note opens with a `---` fence and carries no heading, so the
   // title degraded to the filename and the 240-character preview was YAML.

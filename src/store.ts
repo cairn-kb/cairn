@@ -44,6 +44,20 @@ const DIR: Record<Status, string> = {
 }
 
 /**
+ * `generated`/`repo` as `input` alone says — never inherited from whatever a
+ * prior import recorded. `importDocument` calls this for every document it
+ * writes, so a re-import that omits either field drops it rather than
+ * keeping the old value: the text currently being imported is what decides
+ * whether it is machine-written and which repo it came from, every time.
+ */
+function taggedFields(input: DocumentInput): Pick<Document, "generated" | "repo"> {
+  const fields: Pick<Document, "generated" | "repo"> = {}
+  if (input.generated) fields.generated = true
+  if (input.repo) fields.repo = input.repo
+  return fields
+}
+
+/**
  * A claim somebody has already resolved.
  *
  * Carries `status: 409` because that is how the seam spells a lost race: the
@@ -565,7 +579,18 @@ export class FileStore implements Store {
         await this.events().append("import", bySource.id, { outcome: "unchanged" })
         return { document: bySource, outcome: "unchanged" }
       }
-      const updated: Document = { ...bySource, title: input.title, text: input.text, hash, updated: now }
+      // `generated`/`repo` omitted below means dropped, not kept: a re-import
+      // sets them from THIS input alone, not from whatever `bySource` held, so
+      // the current text's author decides them again every time.
+      const { generated: _g1, repo: _r1, ...bySourceRest } = bySource
+      const updated: Document = {
+        ...bySourceRest,
+        title: input.title,
+        text: input.text,
+        hash,
+        updated: now,
+        ...taggedFields(input),
+      }
       await this.writeDocument(updated)
       await this.events().append("import", updated.id, { outcome: "updated" })
       return { document: updated, outcome: "updated" }
@@ -576,7 +601,14 @@ export class FileStore implements Store {
     // adopt-then-reimport does not leave two copies of everything.
     const adopted = all.find((d) => d.source === null && d.hash === hash)
     if (adopted) {
-      const claimed: Document = { ...adopted, title: input.title, source: input.source, updated: now }
+      const { generated: _g2, repo: _r2, ...adoptedRest } = adopted
+      const claimed: Document = {
+        ...adoptedRest,
+        title: input.title,
+        source: input.source,
+        updated: now,
+        ...taggedFields(input),
+      }
       await this.writeDocument(claimed)
       await this.events().append("import", claimed.id, { outcome: "updated" })
       return { document: claimed, outcome: "updated" }
@@ -590,6 +622,7 @@ export class FileStore implements Store {
       created: now,
       updated: now,
       hash,
+      ...taggedFields(input),
     }
     await this.writeDocument(created)
     await this.events().append("import", created.id, { outcome: "created" })

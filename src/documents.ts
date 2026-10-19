@@ -81,13 +81,19 @@ export function windowOf(
 }
 
 export function serializeDocument(doc: Document): string {
-  const { text, ...front } = doc
-  return matter.stringify(text, front)
+  // `generated` and `repo` are written only when set — never `generated:
+  // false` or an absent `repo` as an explicit key — so a file untouched by
+  // either field looks exactly as it did before they existed.
+  const { text, generated, repo, ...front } = doc
+  const tags: Partial<Pick<Document, "generated" | "repo">> = {}
+  if (generated) tags.generated = true
+  if (repo) tags.repo = repo
+  return matter.stringify(text, { ...front, ...tags })
 }
 
 export function parseDocument(raw: string): Document {
   const { data, content } = matter(raw)
-  return {
+  const doc: Document = {
     id: String(data.id),
     title: String(data.title),
     text: content.trim(),
@@ -99,4 +105,10 @@ export function parseDocument(raw: string): Document {
     updated: new Date(data.updated).toISOString(),
     hash: String(data.hash),
   }
+  // Omitted rather than `false`/`null` when absent — a key present only when
+  // true is what lets a file written before either field existed parse back
+  // with neither key at all.
+  if (data.generated === true) doc.generated = true
+  if (typeof data.repo === "string") doc.repo = data.repo
+  return doc
 }
