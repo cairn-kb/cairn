@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- `cairn search` and an agent's search now find documents and claims for a
+  question in plain words, best match first, instead of only an exact
+  phrase.
 - `cairn abstracts --all` no longer overwrites an abstract a person wrote in
   `cairn curate` or an agent wrote directly. It now regenerates only
   machine-generated and missing abstracts; pass `--force` alongside `--all`
