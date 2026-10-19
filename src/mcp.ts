@@ -380,8 +380,8 @@ export function createTools(store: Store, log: EventSink): KbTools {
         ...(omitted > 0
           ? {
               notice:
-                `${omitted} more match(es) are not shown — narrow the query, or raise limit ` +
-                `(it bounds claims and documents separately).`,
+                `${omitted} more match(es) than shown, ranked best first — raise limit to see ` +
+                `more (it bounds claims and documents separately).`,
             }
           : {}),
       }

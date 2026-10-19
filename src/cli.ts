@@ -4,7 +4,7 @@ import { readdir, readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { join } from "node:path"
 import type { EventSink, Stats } from "./events"
-import { createMcpServer } from "./mcp"
+import { createMcpServer, DEFAULT_SEARCH_LIMIT } from "./mcp"
 import { ABSENCE_FRAMING } from "@cairn-kb/protocol/absence"
 import { isRateLimit, rootMessage } from "./errors"
 import { generateAbstract, resolveGeneration } from "./generate"
@@ -1851,12 +1851,21 @@ export async function main(argv: string[]): Promise<void> {
           ),
         )
       } else {
+        // The terminal view is capped at the same limit `team_knowledge_search`
+        // uses, and for the same reason: a query popular enough to match
+        // hundreds of claims should not bury a person's terminal in them.
+        // `--json` above stays complete — a script asked for everything and
+        // gets everything.
+        const shownHits = hits.slice(0, DEFAULT_SEARCH_LIMIT)
+        const shownDocHits = docHits.slice(0, DEFAULT_SEARCH_LIMIT)
         // `formatSearch` can return "" when documents matched but no claim
         // did under `--all` — nothing left to say about the claim half, so
         // nothing is printed for it rather than a blank line.
-        const claimsText = formatSearch(hits, all, docHits.length > 0)
+        const claimsText = formatSearch(shownHits, all, shownDocHits.length > 0)
         if (claimsText) console.log(claimsText)
-        if (docHits.length > 0) console.log(formatDocumentHits(docHits))
+        if (shownDocHits.length > 0) console.log(formatDocumentHits(shownDocHits))
+        const more = hits.length - shownHits.length + (docHits.length - shownDocHits.length)
+        if (more > 0) console.log(ui.dim(`… and ${more} more — use --json for all`))
       }
       break
     }

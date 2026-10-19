@@ -502,9 +502,10 @@ export const CONTRACT_CASES: ContractCase[] = [
     async run(store, expect) {
       // Characters an FTS query expression treats as syntax: a bare quote, a
       // reserved keyword, a wildcard, a hyphen that reads as column-minus, an
-      // unbalanced paren. A caller's literal words, none of this should ever
-      // reach the query compiler unescaped.
-      for (const q of ['"', "NOT", "*", "a-b", "(x"]) {
+      // unbalanced paren, and text that is nothing BUT punctuation. A
+      // caller's literal words, none of this should ever reach the query
+      // compiler unescaped.
+      for (const q of ['"', "NOT", "*", "a-b", "(x", "?", "...", "- * ?"]) {
         expect(Array.isArray(await store.search(q))).toBe(true)
       }
       expect(await store.search("   ")).toEqual([])
@@ -696,6 +697,18 @@ export const DOCUMENT_CONTRACT_CASES: ContractCase[] = [
       await store.importDocument({ title: "Staging", text: "Staging is separate. Unrelated.", source: "y.md" })
       const hits = await store.searchDocuments("how do we deploy with wrangler?")
       expect(hits.map((d) => d.id)).toEqual([x.id, z.id])
+    },
+  },
+  {
+    name: "searchDocuments survives hostile text",
+    async run(store, expect) {
+      // Same hostile inputs as the claim-search case: none of this should
+      // ever reach the query compiler unescaped, and a blank question is no
+      // question at all rather than a request for everything.
+      for (const q of ['"', "NOT", "*", "a-b", "(x", "?", "...", "- * ?"]) {
+        expect(Array.isArray(await store.searchDocuments(q))).toBe(true)
+      }
+      expect(await store.searchDocuments("   ")).toEqual([])
     },
   },
   {
