@@ -18,7 +18,7 @@
     "scrub": "bun scripts/scrub-check.ts . --gitleaks"
   },
   "dependencies": {
-    "@cairn-kb/protocol": "^0.1.0",
+    "@cairn-kb/protocol": "^0.2.0",
     "@anthropic-ai/sdk": "^0.121.0",
     "@clack/prompts": "^1.7.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
