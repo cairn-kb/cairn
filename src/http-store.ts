@@ -17,6 +17,7 @@ import {
   unknownDocumentMessage,
 } from "@cairn-kb/protocol/event-kinds"
 import type { EventKind, EventSink, KbEvent, Stats, EventInput } from "./events"
+import { ftsQuery } from "./search-query"
 import type {
   CiteInput,
   Claim,
@@ -220,15 +221,16 @@ export class HttpStore implements Store {
   }
 
   async search(query: string): Promise<Claim[]> {
-    // `Store.search` takes literal text; `/search` takes a full-text query
-    // expression. Handing the raw term over is the bug this hides: `-` and `*`
-    // are query operators, so `nothing-matches-this` is not "no results", it
-    // is a 400 the caller never asked for. Quoting makes the term a phrase —
-    // the same normalisation FileStore does — with `"` doubled, which is the
-    // query syntax's own escape and the reason a quote in the query cannot
-    // end the phrase early.
-    const phrase = `"${query.replace(/"/g, '""')}"`
-    const r: { claims: Claim[] } = await this.call(`/search?q=${encodeURIComponent(phrase)}`)
+    // `Store.search` takes a question in plain words; `/search` takes a full-text
+    // query expression. Handing the raw text over is the bug this hides: `-`
+    // and `*` are query operators, so `nothing-matches-this` is not "no
+    // results", it is a 400 the caller never asked for. `ftsQuery` quotes each
+    // term and ORs them together — the same normalisation FileStore does —
+    // so the hosted service ranks by how many of the question's words a claim
+    // shares with it, rather than requiring the whole question verbatim.
+    const fts = ftsQuery(query)
+    if (fts === null) return []
+    const r: { claims: Claim[] } = await this.call(`/search?q=${encodeURIComponent(fts)}`)
     return r.claims
   }
 
@@ -309,11 +311,12 @@ export class HttpStore implements Store {
   }
 
   async searchDocuments(query: string): Promise<Document[]> {
-    // Same quoting as `search`: `Store.searchDocuments` takes literal text and
-    // `/documents?q=` takes a query expression, so an unquoted `-` is a 400
-    // rather than "no results".
-    const phrase = `"${query.replace(/"/g, '""')}"`
-    const r: { documents: Document[] } = await this.call(`/documents?q=${encodeURIComponent(phrase)}`)
+    // Same normalisation as `search`: `Store.searchDocuments` takes a question
+    // in plain words and `/documents?q=` takes a query expression, so an
+    // unquoted `-` is a 400 rather than "no results".
+    const fts = ftsQuery(query)
+    if (fts === null) return []
+    const r: { documents: Document[] } = await this.call(`/documents?q=${encodeURIComponent(fts)}`)
     return r.documents
   }
 

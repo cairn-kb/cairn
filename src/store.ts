@@ -5,6 +5,7 @@ import { absentTerms } from "@cairn-kb/protocol/absence"
 import { makeId, parseClaim, serializeClaim } from "./claims"
 import { makeDocId, parseDocument, serializeDocument } from "./documents"
 import type { EventSink, Stats } from "./events"
+import { ftsQuery } from "./search-query"
 import { hashText } from "@cairn-kb/protocol/hash"
 import { STATUSES } from "@cairn-kb/protocol/types"
 import type {
@@ -198,10 +199,14 @@ export class FileStore implements Store {
   }
 
   async search(query: string): Promise<Claim[]> {
-    const escaped = `"${query.replace(/"/g, '""')}"`
-    const rows = this.db.query("SELECT id FROM claims WHERE claims MATCH ?").all(escaped) as {
-      id: string
-    }[]
+    const fts = ftsQuery(query)
+    if (fts === null) return []
+    const rows = this.db
+      .query("SELECT id FROM claims WHERE claims MATCH ? ORDER BY bm25(claims)")
+      .all(fts) as { id: string }[]
+    // `get` per id, not a join: it is the single place a claim's status
+    // directory is resolved, and the ORDER BY above already put the rows in
+    // rank order, which `Promise.all` preserves.
     const claims = await Promise.all(rows.map((r) => this.get(r.id)))
     return claims.filter((c): c is Claim => c !== null)
   }
@@ -518,10 +523,11 @@ export class FileStore implements Store {
   }
 
   async searchDocuments(query: string): Promise<Document[]> {
-    const escaped = `"${query.replace(/"/g, '""')}"`
-    const rows = this.db.query("SELECT id FROM documents WHERE documents MATCH ?").all(escaped) as {
-      id: string
-    }[]
+    const fts = ftsQuery(query)
+    if (fts === null) return []
+    const rows = this.db
+      .query("SELECT id FROM documents WHERE documents MATCH ? ORDER BY bm25(documents)")
+      .all(fts) as { id: string }[]
     const docs = await Promise.all(rows.map((r) => this.getDocument(r.id)))
     return docs.filter((d): d is Document => d !== null)
   }

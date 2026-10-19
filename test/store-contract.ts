@@ -481,6 +481,36 @@ export const CONTRACT_CASES: ContractCase[] = [
     },
   },
   {
+    name: "search ranks the claim matching more of the question first",
+    async run(store, expect) {
+      // X matches both "deploy" and "wrangler"; Z matches only "wrangler"; Y
+      // shares no word with the question at all, so a search that is still
+      // one exact phrase would find none of them, and a search that merely
+      // ORs the terms without ranking by how many matched would not be able
+      // to tell X and Z apart, or put Y ahead of either.
+      const x = await store.propose(
+        proposal("The deploy uses wrangler", { body: "Run wrangler deploy from the api folder." }),
+      )
+      const z = await store.propose(proposal("Wrangler is pinned", { body: "Pinned to one version." }))
+      await store.propose(proposal("Staging is separate", { body: "Unrelated." }))
+      const hits = await store.search("how do we deploy with wrangler?")
+      expect(hits.map((c) => c.id)).toEqual([x.id, z.id])
+    },
+  },
+  {
+    name: "search survives hostile text",
+    async run(store, expect) {
+      // Characters an FTS query expression treats as syntax: a bare quote, a
+      // reserved keyword, a wildcard, a hyphen that reads as column-minus, an
+      // unbalanced paren. A caller's literal words, none of this should ever
+      // reach the query compiler unescaped.
+      for (const q of ['"', "NOT", "*", "a-b", "(x"]) {
+        expect(Array.isArray(await store.search(q))).toBe(true)
+      }
+      expect(await store.search("   ")).toEqual([])
+    },
+  },
+  {
     name: "stats counts a proposal and the approval that resolved it",
     async run(store, expect) {
       // The approve rate is the number the product measures, and it now
@@ -644,6 +674,28 @@ export const DOCUMENT_CONTRACT_CASES: ContractCase[] = [
       })
       const hits = await store.searchDocuments("out-of-band")
       expect(hits.map((d) => d.id)).toEqual([document.id])
+    },
+  },
+  {
+    name: "searchDocuments ranks the document matching more of the question first",
+    async run(store, expect) {
+      // The same shape as the claim-ranking case, over documents instead of
+      // claims: X matches both "deploy" and "wrangler", Z matches only
+      // "wrangler", Y shares no word with the question and is excluded
+      // outright.
+      const { document: x } = await store.importDocument({
+        title: "Deploy",
+        text: "The deploy uses wrangler. Run wrangler deploy from the api folder.",
+        source: "x.md",
+      })
+      const { document: z } = await store.importDocument({
+        title: "Wrangler version",
+        text: "Wrangler is pinned. Pinned to one version.",
+        source: "z.md",
+      })
+      await store.importDocument({ title: "Staging", text: "Staging is separate. Unrelated.", source: "y.md" })
+      const hits = await store.searchDocuments("how do we deploy with wrangler?")
+      expect(hits.map((d) => d.id)).toEqual([x.id, z.id])
     },
   },
   {
