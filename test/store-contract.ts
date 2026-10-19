@@ -1141,6 +1141,38 @@ export const DOCUMENT_CONTRACT_CASES: ContractCase[] = [
     },
   },
   {
+    name: "a generated document reads back generated, with its repo",
+    async run(store, expect) {
+      const { document } = await store.importDocument({
+        title: "Generated",
+        text: "machine-written text",
+        source: "gen.md",
+        generated: true,
+        repo: "app",
+      })
+      expect(document.generated).toBe(true)
+      expect(document.repo).toBe("app")
+      expect(await store.getDocument(document.id)).toEqual(document)
+      const hits = await store.searchDocuments("machine-written")
+      expect(hits.map((d) => d.id)).toEqual([document.id])
+      expect(hits[0]!.generated).toBe(true)
+      expect(hits[0]!.repo).toBe("app")
+    },
+  },
+  {
+    name: "a document imported without the fields reads back without them",
+    async run(store, expect) {
+      const { document } = await store.importDocument({
+        title: "Human", text: "human-written text", source: "human.md",
+      })
+      expect("generated" in document).toBe(false)
+      expect("repo" in document).toBe(false)
+      const fetched = await store.getDocument(document.id)
+      expect("generated" in fetched!).toBe(false)
+      expect("repo" in fetched!).toBe(false)
+    },
+  },
+  {
     name: "one source-less document does not claim another with different text",
     async run(store, expect) {
       // The control, and the trap the fix had to avoid: matching by source

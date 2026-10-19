@@ -8,6 +8,8 @@
 
 - `cairn search` now shows the top results on the terminal, with a count of
   how many more matched — pass `--json` to see all of them.
+- Documents can be marked as machine-generated and tagged with the repository
+  they came from; `cairn init --team` keeps both when moving documents.
 
 ### Fixed
 

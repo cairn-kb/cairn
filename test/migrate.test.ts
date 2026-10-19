@@ -516,6 +516,18 @@ test("the original file claims the migrated adopted document instead of duplicat
   })
 })
 
+test("a generated document migrates with its repo tag intact", async () => {
+  await withRealStores(async (from, to) => {
+    await from.importDocument({
+      title: "Generated", text: "machine-written text", source: "a.md", generated: true, repo: "app",
+    })
+    await runMigration(from, to, () => {})
+    const target = (await to.listDocuments())[0]!
+    expect(target.generated).toBe(true)
+    expect(target.repo).toBe("app")
+  })
+})
+
 test("a resumed migration does not duplicate a source-less document either", async () => {
   await withRealStores(async (from, to) => {
     // Resume used to work for these by accident: `doc.source ?? doc.id` was
