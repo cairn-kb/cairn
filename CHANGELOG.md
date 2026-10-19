@@ -2,10 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- `cairn search` now shows the top results on the terminal, with a count of
+  how many more matched — pass `--json` to see all of them.
+
 ### Fixed
 
 - `cairn search` and an agent's search now find documents and claims for a
-  question in plain words, best match first, instead of only an exact
+  question in plain words, ranked by relevance, instead of only an exact
   phrase.
 - `cairn abstracts --all` no longer overwrites an abstract a person wrote in
   `cairn curate` or an agent wrote directly. It now regenerates only

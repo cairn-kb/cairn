@@ -18,6 +18,7 @@ import { parseClaim, serializeClaim } from "../src/claims"
 import { EventLog } from "../src/events"
 import { WRITE_KEY } from "../src/telemetry"
 import { FileStore } from "../src/store"
+import { DEFAULT_SEARCH_LIMIT } from "../src/mcp"
 import { EMPTY_RETRACT_REASON, notAdoptableMessage } from "@cairn-kb/protocol/event-kinds"
 import { HttpEventSink, HttpStore } from "../src/http-store"
 import type { Citation, Claim, Document, Status, Store } from "@cairn-kb/protocol/types"
@@ -3117,6 +3118,45 @@ test("search marks which hits are documents", async () => {
   } finally {
     await rm(home, { recursive: true, force: true })
     await rm(docs, { recursive: true, force: true })
+  }
+}, 20000)
+
+test("human search output is capped and says how many more matched", async () => {
+  // `cairn search` without --json used to print every match; a query popular
+  // enough to clear the limit buried the terminal in claims and documents
+  // nobody asked to see. `--json` still returns everything, so a script
+  // never loses a result the person's eyes never see.
+  const home = await mkdtemp(join(tmpdir(), "cairn-search-cap-"))
+  try {
+    const r = join(home, "root")
+    await writeConfig(r, { ...newConfig(false), mode: "local" as const })
+    const store = new FileStore(r, new EventLog(r))
+    await store.init()
+    for (let i = 0; i < DEFAULT_SEARCH_LIMIT + 3; i++) {
+      const claim = await store.propose(proposal(`Ptarmigan claim ${i}`))
+      await store.review(claim.id, "approve")
+    }
+    for (let i = 0; i < DEFAULT_SEARCH_LIMIT + 2; i++) {
+      await store.importDocument({
+        title: `Ptarmigan doc ${i}`,
+        text: `Ptarmigan body ${i}`,
+        source: `p-${i}.md`,
+      })
+    }
+
+    const human = await spawnCli(["search", "Ptarmigan"], { CAIRN_ROOT: r, HOME: home }, home)
+    expect(human.out).toContain(`${DEFAULT_SEARCH_LIMIT} approved`)
+    expect(human.out).toContain(`${DEFAULT_SEARCH_LIMIT} document`)
+    // 3 claims and 2 documents did not fit: 5 more, named as such.
+    expect(human.out).toContain("5 more")
+    expect(human.out).toContain("--json")
+
+    const json = JSON.parse(
+      (await spawnCli(["search", "Ptarmigan", "--json"], { CAIRN_ROOT: r, HOME: home }, home)).out,
+    )
+    expect(json.length).toBe(2 * DEFAULT_SEARCH_LIMIT + 5)
+  } finally {
+    await rm(home, { recursive: true, force: true })
   }
 }, 20000)
 

@@ -757,6 +757,12 @@ test("search returns at most `limit` of each kind and says what it left out", as
   expect(result.omitted).toBe(4)
   // A number an agent might skip past, and a sentence it will not.
   expect(result.notice).toContain("4")
+  // Results within a block are ranked by `bm25`, so "narrow the query" is
+  // the wrong advice for a truncated response — raising `limit` is what
+  // actually surfaces the rest, in the order they already came back.
+  expect(result.notice).not.toContain("narrow")
+  expect(result.notice).toContain("raise limit")
+  expect(result.notice).toContain("best first")
 })
 
 test("the limit applies to each block, so documents are never crowded out", async () => {

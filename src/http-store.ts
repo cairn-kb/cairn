@@ -226,8 +226,8 @@ export class HttpStore implements Store {
     // and `*` are query operators, so `nothing-matches-this` is not "no
     // results", it is a 400 the caller never asked for. `ftsQuery` quotes each
     // term and ORs them together — the same normalisation FileStore does —
-    // so the hosted service ranks by how many of the question's words a claim
-    // shares with it, rather than requiring the whole question verbatim.
+    // so a claim sharing any word of the question can match, rather than
+    // requiring the whole question verbatim. Ordering is the service's.
     const fts = ftsQuery(query)
     if (fts === null) return []
     const r: { claims: Claim[] } = await this.call(`/search?q=${encodeURIComponent(fts)}`)

@@ -14,6 +14,7 @@ change to one of them must be mirrored by the hosted service:
 - The CLI's PKCE challenge (`src/login.ts`) — S256 over the verifier, as in RFC 7636.
 - The CLI's loopback port parsing during `cairn login`.
 
-`Document` and `DocumentInput` also carry two optional fields: `generated`
-(a machine wrote this text; absent means false) and `repo` (the repository
-label the document came from).
+`Document` and `DocumentInput` also carry two optional fields:
+
+- `generated` — a machine wrote this text; absent means false.
+- `repo` — the repository label the document came from; absent means untagged.

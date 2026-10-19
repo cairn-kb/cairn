@@ -15,9 +15,16 @@
  * unbalanced paren — is just a literal word to match rather than a piece of
  * query syntax. A `"` inside a term is doubled, which is the query syntax's
  * own escape for a quote that must not end the term early.
+ *
+ * ASCII control characters (C0, `\u0000`–`\u001F`, and DEL `\u007F`) are
+ * stripped before splitting. None of them is whitespace, so left in place a
+ * NUL byte or similar would ride inside a term verbatim — and a NUL inside
+ * the query string handed to SQLite's FTS5 tokenizer throws rather than
+ * simply failing to match.
  */
 export function ftsQuery(text: string): string | null {
-  const terms = text.split(/\s+/).filter((t) => t.length > 0)
+  const cleaned = text.replace(/[\u0000-\u001F\u007F]/g, "")
+  const terms = cleaned.split(/\s+/).filter((t) => t.length > 0)
   if (terms.length === 0) return null
   return terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ")
 }
