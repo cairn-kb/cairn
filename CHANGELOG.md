@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The macOS binaries now carry their own SQLite library, which is extracted
+  under the cairn data directory (`lib/`) on first run. Every binary also
+  carries the sqlite-vec extension, ready for semantic search; nothing uses it
+  yet.
+
 ## [0.9.1] — 2026-10-20
 
 ### Added

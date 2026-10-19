@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { absentTerms } from "@cairn-kb/protocol/absence"
 import { makeId, parseClaim, serializeClaim } from "./claims"
 import { makeDocId, parseDocument, serializeDocument } from "./documents"
+import { prepareSqlite } from "./native/sqlite-runtime"
 import type { EventSink, Stats } from "./events"
 import { ftsQuery } from "./search-query"
 import { hashText } from "@cairn-kb/protocol/hash"
@@ -100,6 +101,7 @@ export class FileStore implements Store {
     for (const status of STATUSES) {
       await mkdir(join(this.root, DIR[status]), { recursive: true })
     }
+    prepareSqlite(this.root)
     this.db = new Database(join(this.root, "index.db"))
     this.db.run(
       "CREATE VIRTUAL TABLE IF NOT EXISTS claims USING fts5(id UNINDEXED, status UNINDEXED, claim, body, tags)",
