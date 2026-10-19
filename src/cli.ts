@@ -2346,6 +2346,17 @@ export async function main(argv: string[]): Promise<void> {
       else renderPretty(results)
       process.exit(exitCode(results))
     }
+    // Hidden, and not for people: CI runs it against each compiled release
+    // target to prove that binary loads sqlite-vec and still has FTS5. It
+    // touches only a scratch connection and the extracted libraries under the
+    // root, never the knowledge store.
+    case "__selftest": {
+      if (rest[0] !== "vec") throw new Error("usage: cairn __selftest vec")
+      const { runSelftestVec } = await import("./native/sqlite-runtime")
+      const { lines, exitCode } = await runSelftestVec(ROOT)
+      for (const line of lines) console.log(line)
+      process.exit(exitCode)
+    }
     case "--version":
     case "-v":
     case "version":

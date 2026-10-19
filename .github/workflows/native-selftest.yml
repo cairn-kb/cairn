@@ -1,0 +1,121 @@
+name: native-selftest
+# Whether each compiled binary loads sqlite-vec and still has FTS5. Only the
+# compiled binary can say: interpreted, Bun may find a different SQLite than
+# the binary gets, so `bun test` passing proves nothing here.
+#
+# release.yml calls this with the binaries it is about to publish. A pull
+# request touching the native loader builds its own, the same way.
+on:
+  workflow_call:
+    inputs:
+      binaries:
+        description: Name of an artifact holding dist/cairn-<target>. Empty builds them here.
+        type: string
+        default: ""
+  pull_request:
+    paths:
+      - "src/native/**"
+      - "scripts/build-sqlite.sh"
+      - ".github/workflows/native-selftest.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite-darwin:
+    if: inputs.binaries == '' || inputs.binaries == null
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: { persist-credentials: false }
+      - run: scripts/build-sqlite.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: selftest-libsqlite3-darwin
+          path: src/native/darwin/libsqlite3.dylib
+          if-no-files-found: error
+
+  build:
+    needs: sqlite-darwin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.6
+      - run: bun install --frozen-lockfile --os '*' --cpu '*'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selftest-libsqlite3-darwin
+          path: src/native/darwin
+      # The same command as release.yml's "Build every target".
+      - name: Build every target
+        run: |
+          mkdir -p dist
+          for target in darwin-arm64 darwin-x64 linux-x64; do
+            bun build --compile --minify \
+              --define 'process.env.OPENTUI_LIBC="glibc"' \
+              --target="bun-$target" \
+              src/cli.ts --outfile "dist/cairn-$target"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: selftest-binaries
+          path: dist/cairn-*
+          if-no-files-found: error
+
+  selftest:
+    needs: build
+    # build is skipped when the caller hands over its binaries.
+    if: ${{ !failure() && !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            os: macos-14
+          # Apple silicon runs the x64 binary under Rosetta.
+          - target: darwin-x64
+            os: macos-14
+            prefix: arch -x86_64
+          # In a bare container: no Homebrew, no node_modules, no system sqlite3.
+          - target: linux-x64
+            os: ubuntu-latest
+            container: debian:bookworm-slim
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.binaries || 'selftest-binaries' }}
+          path: bin
+      - if: matrix.prefix
+        name: Check Rosetta is installed
+        run: arch -x86_64 /usr/bin/true
+      - name: cairn __selftest vec
+        env:
+          TARGET: ${{ matrix.target }}
+          PREFIX: ${{ matrix.prefix }}
+          CONTAINER: ${{ matrix.container }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A fresh directory and a fresh root, with PATH cut down to the
+          # system's, so nothing on the runner can stand in for what the binary
+          # carries.
+          dir=$(mktemp -d)
+          cp "bin/cairn-$TARGET" "$dir/cairn"
+          chmod +x "$dir/cairn"
+          if [ -n "$CONTAINER" ]; then
+            docker run --rm -v "$dir:/w" -w /w -e CAIRN_ROOT=/w/root "$CONTAINER" \
+              ./cairn __selftest vec | tee out.txt
+          else
+            (cd "$dir" && env -i HOME="$dir" PATH=/usr/bin:/bin CAIRN_ROOT="$dir/root" \
+              $PREFIX ./cairn __selftest vec) | tee out.txt
+          fi
+          grep -qx 'fts5 bm25 ok' out.txt
+          {
+            echo "| target | sqlite | vec |"
+            echo "|---|---|---|"
+            echo "| $TARGET | $(grep '^sqlite ' out.txt) | $(grep '^vec ' out.txt | head -1) |"
+          } >> "$GITHUB_STEP_SUMMARY"
