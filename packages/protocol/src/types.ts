@@ -192,6 +192,13 @@ export interface Document {
   /** `hashText(text)` — content identity, independent of `id`. What a
    *  re-import compares against to decide "created" vs. "unchanged". */
   hash: string
+  /**
+   * A machine wrote this text; it is not a team decision. Absent means false.
+   * Never affects ranking.
+   */
+  generated?: boolean
+  /** The repository label the document came from. */
+  repo?: string
 }
 
 /** Everything a caller decides about a document on import. The store fills in
@@ -221,6 +228,13 @@ export interface DocumentInput {
    * the other side too.
    */
   source: string | null
+  /**
+   * A machine wrote this text; it is not a team decision. Absent means false.
+   * Never affects ranking.
+   */
+  generated?: boolean
+  /** The repository label the document came from. */
+  repo?: string
 }
 
 /** What importing a document did to the store: a fresh id, a changed hash on
