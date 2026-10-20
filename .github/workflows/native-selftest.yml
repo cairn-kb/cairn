@@ -116,9 +116,13 @@ jobs:
           # can print `vec v0.1.9` and then still fail with `vec unavailable:
           # …` if the query itself breaks. Prefer that unavailable line, since
           # it is the one that says vec0 did not end up usable.
-          vec_line=$(grep '^vec unavailable' out.txt | head -1)
+          # `|| true` on each: under pipefail, grep finding no match fails
+          # the pipeline even though head still exits 0, and set -e would
+          # abort the step here on a healthy target, which has no
+          # "vec unavailable" line to find.
+          vec_line=$(grep '^vec unavailable' out.txt | head -1 || true)
           if [ -z "$vec_line" ]; then
-            vec_line=$(grep '^vec ' out.txt | head -1)
+            vec_line=$(grep '^vec ' out.txt | head -1 || true)
           fi
           {
             echo "| target | sqlite | vec |"
