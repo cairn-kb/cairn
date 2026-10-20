@@ -512,3 +512,67 @@ test("an added folder may start with ~ for the home directory", async () => {
   )
   expect(await docCount()).toBe(3)
 })
+
+// --- fix round 1 --------------------------------------------------------------
+
+test("a non-interactive dry run from a subdirectory: config at cwd, fill labelled and at the repo root", async () => {
+  await writeDocs(repoRoot, FOUR)
+  await mkdir(join(repoRoot, "src"))
+  const before = await footprint()
+  let asked = false
+  const ask = async () => {
+    asked = true
+    return true
+  }
+  const outcome = await runInitCommand(
+    await deps({
+      dryRun: true,
+      interactive: false,
+      cwd: join(repoRoot, "src"),
+      resolveMode: async () => {
+        asked = true
+        return "local"
+      },
+      confirmWrite: ask,
+      selectFolders: async () => {
+        asked = true
+        return []
+      },
+    }),
+  )
+  expect(outcome).toBe("planned")
+  expect(asked).toBe(false)
+  expect(await footprint()).toEqual(before)
+  const out = said()
+  expect(out).toContain(join(repoRoot, "src", ".mcp.json"))
+  expect(out).not.toContain(`${join(repoRoot, ".mcp.json")}\n`)
+  const heading = out.indexOf("In a terminal, init would also import:")
+  expect(heading).toBeGreaterThan(out.indexOf("Would configure"))
+  expect(out.slice(heading)).toContain(`4 documents from app — ${repoRoot}`)
+})
+
+test("an interactive dry run keeps its fill plan unlabelled", async () => {
+  await writeDocs(repoRoot, FOUR)
+  await runInitCommand(await deps({ dryRun: true }))
+  expect(said()).not.toContain("In a terminal, init would also import")
+  expect(said()).toContain("Would import 4 documents")
+})
+
+test("Claude Code's failed proof still prints the code-scan prompt but offers no launch", async () => {
+  await writeDocs(repoRoot, { "README.md": "# app\n\nhi\n" })
+  const launched: string[] = []
+  const outcome = await runInitCommand(
+    await deps({
+      agentOnPath: () => true,
+      handshake: async () => {
+        throw new Error("spawn failed")
+      },
+      launchAgent: async (p) => {
+        launched.push(p)
+      },
+    }),
+  )
+  expect(outcome).toBe("written")
+  expect(said()).toContain("map this repo for cairn (repo: app)")
+  expect(launched).toEqual([])
+})

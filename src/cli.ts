@@ -16,7 +16,7 @@ import { findRepo, repoLabel, scanDocs, topFolders, type RepoInfo } from "./repo
 import { applyFill, CODE_SCAN_THRESHOLD, planFill, type FillPlan } from "./fill"
 import { codeScanPrompt } from "./import-skill"
 import { firstAnswer, suggestQuestion } from "./first-answer"
-import { proveAgents, RESTART_NOTE, UNOBSERVABLE } from "./prove"
+import { proveAgents, RESTART_NOTE, UNOBSERVABLE, type AgentProof } from "./prove"
 import { planMigration, runMigration } from "./migrate"
 import { openInBrowser } from "./browser"
 import { runLogin, runLogout } from "./login"
@@ -732,8 +732,11 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
   )
   if (!d.interactive) return "written"
 
-  await printProofs(d, plan)
-  await firstFill(d, repo, plan, mode, auth)
+  const proofs = await printProofs(d, plan)
+  // Launching Claude Code is only worth offering once it has shown it can
+  // start cairn; with a failed proof the prompt is still printed, for later.
+  const claudeProven = proofs.some((p) => p.agent === "claude" && p.ok)
+  await firstFill(d, repo, plan, mode, auth, claudeProven)
 
   // The baseline the first-answer metric measures from — with consent only,
   // and set once: a re-run of init is not a new first run. Patched rather
@@ -756,11 +759,19 @@ async function printFillDryRun(
   mode: Mode | null,
 ): Promise<void> {
   if (!repo) {
-    d.out(`\n${ui.bold("Would import")} nothing yet — no git repository here, so init would ask for folders.`)
+    d.out(
+      d.interactive
+        ? `\n${ui.bold("Would import")} nothing yet — no git repository here, so init would ask for folders.`
+        : `\n${ui.bold("In a terminal, init would also import:")} nothing yet — no git repository here, so it would ask for folders.`,
+    )
     return
   }
+  // Always the repository root: that is where an interactive run imports
+  // from. A script never imports, so its plan is labelled as what a terminal
+  // run would add, not as part of what this run would do.
   const fill = await planFill(repo, await scanDocs(repo.root), plan.agents, plan.scope, d.home, mode)
-  printFillPreview(d, fill, "Would")
+  if (!d.interactive) d.out(`\n${ui.bold("In a terminal, init would also import:")}`)
+  printFillPreview(d, fill, d.interactive ? "Would" : null)
   if (fill.codeScan === null) {
     d.out(ui.dim("  Too few documents for a first import; whether to offer a code scan: mode not chosen yet."))
   } else if (fill.codeScan) {
@@ -769,21 +780,23 @@ async function printFillDryRun(
 }
 
 /** The import set and every skill file it writes, before either happens. */
-function printFillPreview(d: InitCommandDeps, fill: FillPlan, verb: "Will" | "Would"): void {
+function printFillPreview(d: InitCommandDeps, fill: FillPlan, verb: "Will" | "Would" | null): void {
   const n = fill.files.length
-  d.out(`\n${ui.bold(`${verb} import`)} ${plural(n, "document")} from ${ui.cyan(fill.repo.label)} — ${fill.repo.root}`)
+  // Null: already headed by the caller, so the count stands on its own line.
+  const lead = verb ? `\n${ui.bold(`${verb} import`)} ` : "  "
+  d.out(`${lead}${plural(n, "document")} from ${ui.cyan(fill.repo.label)} — ${fill.repo.root}`)
   for (const { folder, count } of topFolders(fill.repo.root, fill.files).slice(0, 5)) {
     d.out(`  ${ui.skip(`${folder === "." ? "(top level)" : `${folder}/`} ${ui.dim(String(count))}`)}`)
   }
   if (fill.skills.length > 0) {
-    d.out(`${ui.bold(`${verb} write`)} the cairn-import skill, so your agent can map the code:`)
+    d.out(`${ui.bold(`${verb ?? "Would"} write`)} the cairn-import skill, so your agent can map the code:`)
     for (const skill of fill.skills) d.out(`  ${ui.skip(ui.dim(skill.path))}`)
   }
 }
 
 /** Read each agent's cairn entry back from disk and start it, the way the
  *  agent will. A failure is reported with its fix and the run carries on. */
-async function printProofs(d: InitCommandDeps, plan: InitPlan): Promise<void> {
+async function printProofs(d: InitCommandDeps, plan: InitPlan): Promise<AgentProof[]> {
   const proofs = await proveAgents(plan.configs, d.handshake ?? spawnHandshake)
   d.out("")
   for (const p of proofs) {
@@ -798,6 +811,7 @@ async function printProofs(d: InitCommandDeps, plan: InitPlan): Promise<void> {
     if (unseen) d.out(`  ${ui.dim("→")} ${AGENT_LABEL[agent]}: ${unseen}`)
   }
   d.out(ui.dim(RESTART_NOTE))
+  return proofs
 }
 
 function isInside(root: string, dir: string): boolean {
@@ -818,6 +832,7 @@ async function firstFill(
   plan: InitPlan,
   mode: Mode,
   auth: AuthConfig | null,
+  claudeProven: boolean,
 ): Promise<void> {
   let target = repo
   let files = target ? await scanDocs(target.root) : []
@@ -905,7 +920,7 @@ async function firstFill(
   if (fill.codeScan === true && fill.skills.length > 0) {
     const prompt = codeScanPrompt(fill.repo.label)
     d.out(`\nTo have your agent map the code, tell it: ${ui.cyan(prompt)}`)
-    if (plan.agents.includes("claude") && d.launchAgent && d.agentOnPath?.()) {
+    if (claudeProven && d.launchAgent && d.agentOnPath?.()) {
       await d.launchAgent(prompt, fill.repo.root)
     }
   }
@@ -2440,7 +2455,9 @@ export async function main(argv: string[]): Promise<void> {
             cwd: handoff.cwd,
             stdio: ["inherit", "inherit", "inherit"],
           })
-          process.exitCode = await proc.exited
+          // Awaited so cairn does not exit under it, but its exit code is
+          // Claude Code's own business: init itself succeeded.
+          await proc.exited
         }
       }
       break
