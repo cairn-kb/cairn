@@ -22,7 +22,9 @@
 
 - Importing into a local space no longer slows down as the space grows —
   each document is found through an index instead of by reading every
-  stored document.
+  stored document. The first command after upgrading builds that index by
+  reading every stored document once, so a one-off slow start on a large
+  space is expected.
 
 ## [0.9.1] — 2026-10-20
 

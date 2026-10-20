@@ -338,6 +338,87 @@ test("a stale-triggered rebuild does not blind a concurrent import of an untouch
   expect((await store.listDocuments()).length).toBe(2)
 })
 
+// A real `importDocument` landing squarely inside `rebuildKeyTable`'s
+// directory read is timing-dependent and, on a fast local filesystem with
+// only a handful of documents, does not reliably land there — `Promise.all`
+// racing the two reliably resolved before this test ever caught the bug it
+// was meant to catch. So this drives the same code deterministically
+// instead, through the same private seam the other tests in this file reach
+// `store.db` through: simulate "a rebuild's read is in flight" by setting
+// `rebuildsInFlight` directly, perform a write, then run the rebuild from a
+// snapshot taken before that write — exactly the sequence a real interleaving
+// produces, with no race to get unlucky on.
+//
+// A brand-NEW document is what this needs, not an update to an existing one:
+// an update's row going missing is self-healing (the next lookup's `hash`
+// disagrees with the document on disk, which `matchDocumentKey` already
+// treats as stale and rebuilds from). A new document has no prior row to go
+// stale FROM — if the rebuild's stale snapshot (taken before it existed)
+// erases it with nothing to restore it, the next lookup finds no row at all,
+// which reads as "never imported," not "stale," and creates a second
+// document for the same source.
+
+test("a document created mid-rebuild is not lost when the rebuild's stale snapshot wins the race", async () => {
+  // The snapshot a real rebuild would have taken BEFORE the write below --
+  // captured directly, matching what `rebuildKeyTable` does internally.
+  const staleSnapshot = await store.listDocuments()
+
+  const internals = store as unknown as {
+    rebuildsInFlight: number
+    rebuildKeyTable(docs?: unknown[]): Promise<void>
+  }
+  internals.rebuildsInFlight = 1
+  const created = await store.importDocument({ title: "New", text: "new text", source: "new.md" })
+  expect(created.outcome).toBe("created")
+
+  // Running the rebuild now, from the pre-write snapshot, is exactly what
+  // happens when a real `writeDocument` lands inside `rebuildKeyTable`'s
+  // directory read: the DELETE below wipes `document_keys`, and the reinsert
+  // -- working only from `staleSnapshot` -- does not know "new.md" exists.
+  await internals.rebuildKeyTable(staleSnapshot)
+  internals.rebuildsInFlight = 0
+
+  const again = await store.importDocument({ title: "New", text: "new text", source: "new.md" })
+  expect(again.outcome).toBe("unchanged")
+  expect(again.document.id).toBe(created.document.id)
+  expect((await store.listDocuments()).length).toBe(1)
+})
+
+// --- one unreadable document must not stop the whole space from opening --
+//
+// Before `document_keys`, `init()` never read a document's content at all.
+// `healKeyTable`'s count-mismatch rebuild made it read every one of them —
+// and a single file `parseDocument` cannot make sense of (broken frontmatter
+// YAML, or a `created`/`updated` value that is not a date) used to throw
+// out of `init()` itself, every time, since the broken file could never earn
+// a row and the counts would never agree. `cairn mcp`, search and `cairn
+// doctor`'s space check all go through `init()`, so one bad file took all of
+// them down at once.
+
+test("a document file that will never parse does not stop init from opening the space", async () => {
+  await store.importDocument({ title: "Good", text: "good text", source: "good.md" })
+  // A file nothing here can fix: `created` is not a date, which throws a
+  // RangeError out of `parseDocument`'s `new Date(...).toISOString()`. The
+  // filename does not have to match the frontmatter `id` -- `listDocuments`
+  // and its tolerant counterpart both just read every `*.md` in the
+  // directory -- so this is exactly the shape of file that could turn up by
+  // itself, unrelated to anything the store wrote.
+  await writeFile(
+    join(root, "documents", "broken.md"),
+    "---\nid: doc-broken\ntitle: Broken\nsource: null\ncreated: not-a-date\nupdated: not-a-date\nhash: deadbeef\n---\nbroken body\n",
+    "utf-8",
+  )
+  // The shape an older index.db leaves behind, forcing the heal path on the
+  // next open.
+  ;(store as unknown as { db: { run(sql: string): void } }).db.run("DELETE FROM document_keys")
+
+  const fresh = new FileStore(root, new EventLog(root))
+  await fresh.init()
+
+  const result = await fresh.importDocument({ title: "Good", text: "good text", source: "good.md" })
+  expect(result.outcome).toBe("unchanged")
+})
+
 // --- adoptImport coverage the generic Store contract cannot exercise ------
 //
 // Both tests below need a real filesystem underneath the seam — one corrupts
