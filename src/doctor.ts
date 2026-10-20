@@ -7,6 +7,10 @@ import { readConfig } from "./config"
 import { TELEMETRY_URL, TIMEOUT_MS } from "./telemetry"
 import { resolveGeneration } from "./generate"
 import { detectAgents } from "./init"
+import { desktopConfigPath } from "./agents"
+import { readCodexEntry } from "./codex-config"
+import { findRepo } from "./repo"
+import type { GitRunner } from "./repo"
 import type { McpServerEntry } from "./init"
 import { keyProvenance, resolveBaseUrl } from "./providers"
 import { HttpStore } from "./http-store"
@@ -42,6 +46,12 @@ export interface DoctorDeps {
    * then have to cast its way past.
    */
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>
+  /** Which platform's Claude Desktop config path to look at. Defaults to this one. */
+  platform?: NodeJS.Platform
+  /** `%APPDATA%`, which Claude Desktop's config path is under on Windows. */
+  appData?: string
+  /** Runs git, to find the repository containing `cwd`. Defaults to the real one. */
+  git?: GitRunner
 }
 
 export const EXPECTED_TOOLS = [
@@ -138,22 +148,34 @@ export async function spawnHandshake(
   }
 }
 
-/** Project config wins over global, matching the order agents themselves resolve. */
+/**
+ * Project config wins over global, matching the order agents themselves
+ * resolve. The project files are looked for in `cwd` and then at the top of
+ * the repository containing it, which is where an interactive `cairn init`
+ * writes them — so doctor run from a subfolder still finds them. Codex and
+ * Claude Desktop have one machine-wide config each, so they come last.
+ */
 export async function findMcpConfig(
   deps: DoctorDeps,
 ): Promise<{ path: string; entry: McpServerEntry } | null> {
-  const candidates = [
-    join(deps.cwd, ".mcp.json"),
-    join(deps.cwd, ".cursor", "mcp.json"),
-    join(deps.home, ".claude.json"),
-    join(deps.home, ".cursor", "mcp.json"),
+  const fromJson = (text: string) =>
+    (JSON.parse(text) as { mcpServers?: Record<string, McpServerEntry> }).mcpServers?.cairn ?? null
+  const repoRoot = (await findRepo(deps.cwd, deps.git))?.root
+  const projectDirs = repoRoot && repoRoot !== deps.cwd ? [deps.cwd, repoRoot] : [deps.cwd]
+  const desktop = desktopConfigPath(deps.home, deps.platform ?? process.platform, deps.appData)
+  const candidates: [string, (text: string) => McpServerEntry | null][] = [
+    ...projectDirs.flatMap((dir) => [
+      [join(dir, ".mcp.json"), fromJson],
+      [join(dir, ".cursor", "mcp.json"), fromJson],
+    ] as [string, typeof fromJson][]),
+    [join(deps.home, ".claude.json"), fromJson],
+    [join(deps.home, ".cursor", "mcp.json"), fromJson],
+    [join(deps.home, ".codex", "config.toml"), readCodexEntry],
+    ...(desktop ? [[desktop, fromJson] as [string, typeof fromJson]] : []),
   ]
-  for (const path of candidates) {
+  for (const [path, read] of candidates) {
     try {
-      const parsed = JSON.parse(await readFile(path, "utf-8")) as {
-        mcpServers?: Record<string, McpServerEntry>
-      }
-      const entry = parsed.mcpServers?.cairn
+      const entry = read(await readFile(path, "utf-8"))
       if (entry) return { path, entry }
     } catch {
       // Unreadable or unparseable: keep looking. checkConfig reports the miss.

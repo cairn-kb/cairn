@@ -194,6 +194,67 @@ test("one exploding check does not abort the rest", async () => {
   expect(results.some((r) => r.name === "telemetry")).toBe(true)
 })
 
+// --- where doctor looks for a config -------------------------------------
+
+const cairnEntry = () => ({ command: "/bin/cairn", args: ["mcp"], env: { CAIRN_ROOT: root } })
+
+test("doctor finds the Codex config init writes", async () => {
+  await mkdir(join(home, ".codex"), { recursive: true })
+  const path = join(home, ".codex", "config.toml")
+  await writeFile(
+    path,
+    `model = "x"\n\n[mcp_servers.cairn]\ncommand = "/bin/cairn"\nargs = ["mcp"]\n\n[mcp_servers.cairn.env]\nCAIRN_ROOT = ${JSON.stringify(root)}\n`,
+    "utf-8",
+  )
+  const found = await findMcpConfig(deps())
+  expect(found?.path).toBe(path)
+  expect(found?.entry).toEqual(cairnEntry())
+})
+
+test("doctor finds the Claude Desktop config init writes", async () => {
+  const dir = join(home, "Library", "Application Support", "Claude")
+  await mkdir(dir, { recursive: true })
+  const path = join(dir, "claude_desktop_config.json")
+  await writeFile(path, JSON.stringify({ mcpServers: { cairn: cairnEntry() } }), "utf-8")
+  const found = await findMcpConfig(deps({ platform: "darwin" }))
+  expect(found?.path).toBe(path)
+})
+
+test("run from a subfolder, doctor finds the .mcp.json at the git root", async () => {
+  // An interactive init writes the project config at the repo's top level,
+  // so doctor run from deeper inside the repo has to look there too.
+  await writeMcp(cairnEntry())
+  const sub = join(cwd, "src", "deep")
+  await mkdir(sub, { recursive: true })
+  const found = await findMcpConfig(deps({ cwd: sub, git: async () => `${cwd}\n` }))
+  expect(found?.path).toBe(join(cwd, ".mcp.json"))
+})
+
+test("run from a subfolder, doctor finds a git-root .cursor/mcp.json", async () => {
+  await mkdir(join(cwd, ".cursor"), { recursive: true })
+  await writeFile(join(cwd, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { cairn: cairnEntry() } }), "utf-8")
+  const sub = join(cwd, "pkg")
+  await mkdir(sub, { recursive: true })
+  const found = await findMcpConfig(deps({ cwd: sub, git: async () => cwd }))
+  expect(found?.path).toBe(join(cwd, ".cursor", "mcp.json"))
+})
+
+test("a project config still wins over the machine-wide Codex and Desktop ones", async () => {
+  await writeMcp(cairnEntry())
+  await mkdir(join(home, ".codex"), { recursive: true })
+  await writeFile(join(home, ".codex", "config.toml"), `[mcp_servers.cairn]\ncommand = "/x"\nargs = []\n`, "utf-8")
+  const found = await findMcpConfig(deps())
+  expect(found?.path).toBe(join(cwd, ".mcp.json"))
+})
+
+test("Claude Code's global config still wins over Codex", async () => {
+  await writeFile(join(home, ".claude.json"), JSON.stringify({ mcpServers: { cairn: cairnEntry() } }), "utf-8")
+  await mkdir(join(home, ".codex"), { recursive: true })
+  await writeFile(join(home, ".codex", "config.toml"), `[mcp_servers.cairn]\ncommand = "/x"\nargs = []\n`, "utf-8")
+  const found = await findMcpConfig(deps())
+  expect(found?.path).toBe(join(home, ".claude.json"))
+})
+
 // --- instructions ---------------------------------------------------------
 
 test("a Cursor-only global install warns rather than failing", async () => {
