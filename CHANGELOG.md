@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-20
+
 ### Added
 
 - `cairn init` now looks for Codex and Claude Desktop as well as Claude Code
