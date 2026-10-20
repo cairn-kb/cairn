@@ -19,6 +19,8 @@
 - Agents can write overview documents into a local space with the new
   `team_knowledge_write_document` MCP tool; they are labelled generated in
   search, reads and `cairn show`.
+- `cairn init` checks that each agent it configured can actually start
+  cairn, and names the fix when one cannot.
 
 ### Fixed
 
