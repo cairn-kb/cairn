@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- `cairn init` asks which agents to connect, with the ones it found
+  pre-selected, and `--agents claude,cursor,codex,other` chooses without
+  asking. "Other MCP client" writes the shared instructions and prints the
+  server config to paste into that client.
+
+### Changed
+
+- `cairn init` no longer configures Claude Desktop unless asked with
+  `--agents claude-desktop`.
+
 ### Fixed
 
 - Importing into a local space no longer slows down as the space grows —

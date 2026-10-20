@@ -11,7 +11,7 @@ import { generateAbstract, resolveGeneration } from "./generate"
 import type { ResolvedGeneration } from "./generate"
 import { runDoctor, spawnHandshake } from "./doctor"
 import { applyInit, planInit, type InitPlan, type McpServerEntry, type Scope } from "./init"
-import { AGENT_LABEL, detectAgents, formatAgents } from "./agents"
+import { AGENT_LABEL, detectAgents, formatAgents, INIT_AGENTS, parseAgentsFlag, type Agent } from "./agents"
 import { findRepo, repoLabel, scanDocs, topFolders, type RepoInfo } from "./repo"
 import { applyFill, CODE_SCAN_THRESHOLD, planFill, type FillPlan } from "./fill"
 import { codeScanPrompt } from "./import-skill"
@@ -127,7 +127,7 @@ export function modeFromFlags(rest: readonly string[]): Mode | null {
 export const COMMAND_FLAGS: Record<string, readonly string[]> = {
   init: [
     "--global", "--project", "--dry-run", "--yes", "--telemetry", "--no-telemetry",
-    "--local", "--team",
+    "--local", "--team", "--agents",
   ],
   model: ["--provider", "--model", "--base-url", "--max-tokens", "--list", "--verify", "--yes"],
   doctor: ["--json"],
@@ -153,7 +153,7 @@ export const COMMAND_FLAGS: Record<string, readonly string[]> = {
 
 /** Flags whose value is the next argument, so that value is not itself a flag. */
 const VALUED_FLAGS = new Set([
-  "--provider", "--model", "--base-url", "--max-tokens", "--reason", "--supports",
+  "--provider", "--model", "--base-url", "--max-tokens", "--reason", "--supports", "--agents",
 ])
 
 /** Flags this command does not take. Empty for a command that does not exist —
@@ -457,6 +457,15 @@ export interface InitCommandDeps {
   // caller that leaves one out keeps today's behaviour for that step — no
   // confirmation asked, nothing signed in, no folders added.
 
+  /** `--agents`, parsed: the agents to configure, and whether the other MCP
+   *  client was named. Null or absent when the flag was not given. */
+  agentsFlag?: { agents: Agent[]; other: boolean } | null
+  /**
+   * Which agents to configure, asked with the detected ones pre-selected.
+   * Only asked in a terminal, without `--agents`, and not on a dry run. Null
+   * means cancelled, and so does choosing nothing at all.
+   */
+  chooseAgents?: (found: Agent[]) => Promise<{ agents: Agent[]; other: boolean } | null>
   /** The git repository containing `cwd`, or null. In a terminal, project
    *  scope configures its root and its docs are what fill offers. */
   repo?: RepoInfo | null
@@ -487,6 +496,9 @@ export interface InitCommandDeps {
   /** The closing line of an interactive run. Defaults to `out`. */
   outro?: (line: string) => void
 }
+
+/** The picker's name for "a client cairn does not know", and the preview's. */
+const OTHER_CLIENT_LABEL = "Other MCP client"
 
 /** How an interactive run ends when at least one agent proved it can start cairn. */
 export const INIT_OUTRO = "Restart your agent, then run `cairn doctor`"
@@ -524,6 +536,21 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
   const scope = await d.resolveScope()
   if (scope === null) return "cancelled"
 
+  // Independent of plan.agents, which can hold an assumed agent nothing was
+  // actually detected for (see planInit's --project fallback) — the operator
+  // should still be told the truth about what is on disk. Only the agents
+  // init offers: a detected Claude Desktop is not one of them.
+  const found = (await detectAgents(d.home)).filter((a) => INIT_AGENTS.includes(a))
+
+  // Asked before anything is planned, so the preview names only what was
+  // chosen. A dry run asks nothing and shows the default, as it always has.
+  let choice = d.agentsFlag ?? null
+  const picked = d.interactive && !choice && !d.dryRun && d.chooseAgents !== undefined
+  if (picked) {
+    choice = await d.chooseAgents!(found)
+    if (choice === null || (choice.agents.length === 0 && !choice.other)) return "cancelled"
+  }
+
   const repo = d.repo ?? null
   // In a terminal, project scope means the repository, wherever inside it
   // `init` was run — `.mcp.json` in `src/` is a config no agent opens.
@@ -533,11 +560,8 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
     home: d.home, cwd: projectDir, cliPath: d.cliPath, scope,
     dryRun: d.dryRun, bunPath: d.bunPath, execPath: d.execPath, cairnRoot: d.root,
     writeWithoutAgent: d.writeWithoutAgent, interactive: d.interactive,
+    ...(choice ? { agents: choice.agents, otherClient: choice.other } : {}),
   })
-  // Independent of plan.agents, which can hold an assumed agent nothing was
-  // actually detected for (see planInit's --project fallback) — the operator
-  // should still be told the truth about what is on disk.
-  const found = await detectAgents(d.home)
 
   for (const w of plan.warnings) d.out(`${ui.warn(w)}\n`)
   // One line, and only when there is something to say: a script's output is
@@ -553,27 +577,30 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
     )
   }
 
-  if (plan.agents.length === 0) {
-    // Something was found, and what is left to say about it is said above.
-    if (found.length > 0) return "no-agent"
+  if (plan.agents.length === 0 && !plan.otherClient) {
+    // Something was found, or chosen, and what is left to say about it is
+    // said above.
+    if (found.length > 0 || choice) return "no-agent"
     d.out(ui.warn("No supported agent found."))
-    d.out(ui.dim(`  Looked for ~/.claude, ~/.cursor, ~/.codex and Claude Desktop in ${d.home}.`))
+    d.out(ui.dim(`  Looked for ~/.claude, ~/.cursor and ~/.codex in ${d.home}.`))
     // Naming the escape is the whole point: this used to stop here, and
     // doctor's remedy was `cairn init`, which arrives back at this line.
-    d.out(ui.dim("  Install Claude Code, Cursor, Codex or Claude Desktop, or run `cairn init --project`"))
+    d.out(ui.dim("  Install Claude Code, Cursor or Codex, or run `cairn init --project`"))
     d.out(ui.dim("  to write a project config anyway."))
     return "no-agent"
   }
 
   // Only meaningful with a human watching — a script reading stdout gets the
-  // same bytes it always has.
-  if (d.interactive) {
+  // same bytes it always has. The picker already showed the same list.
+  if (d.interactive && !picked) {
     for (const line of formatAgents(found, ui)) d.out(`${line}\n`)
   }
 
   // "Will write: …" — named before consent is asked.
   // Names for a person; a script reading stdout keeps the ids it always got.
-  const configuring = d.interactive ? listJoin(plan.agents.map((a) => AGENT_LABEL[a])) : plan.agents.join(" and ")
+  const configuring = d.interactive
+    ? listJoin([...plan.agents.map((a) => AGENT_LABEL[a]), ...(plan.otherClient ? [OTHER_CLIENT_LABEL] : [])])
+    : [...plan.agents, ...(plan.otherClient ? ["other"] : [])].join(" and ")
   d.out(
     `${ui.bold(d.dryRun ? "Would configure" : "Will configure")} ` +
       `${ui.cyan(configuring)} — ${plan.scope}\n`,
@@ -772,8 +799,10 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
   )
   // Still "written", and still exit 0: the files are on disk and correct as
   // far as cairn can tell. But a run whose every agent failed to start cairn
-  // must not close the way a working one does.
-  ;(d.outro ?? d.out)(anyProven ? INIT_OUTRO : INIT_OUTRO_UNPROVEN)
+  // must not close the way a working one does. A run of the other MCP client
+  // alone had nothing to prove, which is not the same as failing to.
+  const nothingToProve = plan.configs.length === 0 && plan.otherClient
+  ;(d.outro ?? d.out)(anyProven || nothingToProve ? INIT_OUTRO : INIT_OUTRO_UNPROVEN)
   return "written"
 }
 
@@ -2370,6 +2399,8 @@ export async function main(argv: string[]): Promise<void> {
     }
     case "init": {
       const dryRun = rest.includes("--dry-run")
+      // Parsed before anything is asked, so a typo fails at once.
+      const agentsFlag = parseAgentsFlag(rest)
       // Resolve our own path rather than asking for it — a wrong absolute path
       // is the single most common way this setup fails.
       const cliPath = fileURLToPath(import.meta.url)
@@ -2406,6 +2437,30 @@ export async function main(argv: string[]): Promise<void> {
         interactive,
         repo,
         modeFlag: modeFromFlags(rest),
+        agentsFlag,
+        chooseAgents: async (found) => {
+          const answer = answered(
+            await clack!.multiselect<Agent | "other">({
+              message: "Which agents should cairn connect to?",
+              options: [
+                ...INIT_AGENTS.map((agent) => ({
+                  value: agent,
+                  label: AGENT_LABEL[agent],
+                  hint: found.includes(agent) ? "found" : "not found",
+                })),
+                {
+                  value: "other" as const,
+                  label: OTHER_CLIENT_LABEL,
+                  hint: "writes AGENTS.md and prints the config to paste",
+                },
+              ],
+              initialValues: INIT_AGENTS.filter((a) => found.includes(a)),
+              required: false,
+            }),
+          )
+          if (answer === null) return null
+          return { agents: answer.filter((a): a is Agent => a !== "other"), other: answer.includes("other") }
+        },
         confirmWrite: async (message) => answered(await clack!.confirm({ message, initialValue: true })),
         selectFolders: async (folders) =>
           answered(
@@ -2665,7 +2720,7 @@ export async function main(argv: string[]): Promise<void> {
       )
       console.log(
         ui.dim(
-          "  init [--local|--team] [--project|--global] [--yes] [--telemetry|--no-telemetry] [--dry-run]   connect your agents",
+          "  init [--local|--team] [--project|--global] [--agents claude,cursor,codex,other] [--yes] [--telemetry|--no-telemetry] [--dry-run]   connect your agents",
         ),
       )
       console.log(

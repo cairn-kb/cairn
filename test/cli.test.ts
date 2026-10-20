@@ -2514,21 +2514,22 @@ test("global scope still refuses when no agent is detected", async () => {
   expect(await footprint()).toEqual(before)
 })
 
-test("the no-agent message names all four agents cairn looks for", async () => {
+test("the no-agent message names the three agents init looks for, and not Claude Desktop", async () => {
   await bareHome()
   const lines: string[] = []
   await runInitCommand(await initDeps({ out: (l) => lines.push(l) }))
   const said = lines.join("\n")
   expect(said).toContain("~/.codex")
-  expect(said).toContain("Claude Desktop")
-  expect(said).toContain("Install Claude Code, Cursor, Codex or Claude Desktop")
+  expect(said).not.toContain("Claude Desktop")
+  expect(said).toContain("Install Claude Code, Cursor or Codex")
 })
 
 // --- showing which agents were found, in a terminal --------------------------
 
 test("an interactive run prints which agents it found before the preview", async () => {
-  // beforeEach gives this home both .claude and .cursor; codex and Claude
-  // Desktop are absent, so this exercises a tick and a dim line both ways.
+  // beforeEach gives this home both .claude and .cursor; codex is absent, so
+  // this exercises a tick and a dim line both ways. Claude Desktop is no
+  // longer one of the agents init offers, so it is not listed at all.
   const lines: string[] = []
   await runInitCommand(await initDeps({ interactive: true, out: (l) => lines.push(l) }))
   const said = lines.join("\n")
@@ -2538,7 +2539,7 @@ test("an interactive run prints which agents it found before the preview", async
   expect(previewAt).toBeGreaterThan(foundAt)
   expect(said).toContain("Cursor")
   expect(said).toContain("Codex — not found")
-  expect(said).toContain("Claude Desktop — not found")
+  expect(said).not.toContain("Claude Desktop")
 })
 
 test("a non-interactive run prints nothing about which agents it found", async () => {

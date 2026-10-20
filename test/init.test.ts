@@ -16,6 +16,7 @@ import {
   upsertGitignore,
   writeAtomic,
 } from "../src/init"
+import type { Agent } from "../src/init"
 import { readCodexEntry } from "../src/codex-config"
 import { SEARCH_GUIDANCE } from "../src/guidance"
 
@@ -570,12 +571,12 @@ test("a cairn server written as an inline table is skipped the same way", async 
 })
 
 for (const scope of ["global", "project"] as const) {
-  test(`Claude Desktop at ${scope} scope plans its config, the paste step and the restart`, async () => {
+  test(`Claude Desktop asked for at ${scope} scope plans its config, the paste step and the restart`, async () => {
     const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
     await mkdir(join(home, ".config", "Claude"), { recursive: true })
     await writeFile(desktopCfg(), JSON.stringify({ mcpServers: { other: { command: "x" } } }), "utf-8")
     try {
-      const plan = await planInit(opts(repo, scope))
+      const plan = await planInit({ ...opts(repo, scope), agents: ["claude-desktop"] })
       const cfg = plan.changes.find((c) => c.path === desktopCfg())
       expect(cfg).toBeDefined()
       const parsed = JSON.parse(cfg!.content)
@@ -593,8 +594,9 @@ test("a malformed Claude Desktop config is left untouched, with the server to ad
   await mkdir(join(home, ".claude"))
   await mkdir(join(home, ".config", "Claude"), { recursive: true })
   await writeFile(desktopCfg(), "{ broken", "utf-8")
-  const plan = await planInit({ ...opts(home, "global"), dryRun: false })
-  const result = await runInit({ ...opts(home, "global"), dryRun: false })
+  const asked = { ...opts(home, "global"), dryRun: false, agents: ["claude", "claude-desktop"] as Agent[] }
+  const plan = await planInit(asked)
+  const result = await runInit(asked)
   expect(await readFile(desktopCfg(), "utf-8")).toBe("{ broken")
   const warning = result.warnings.find((w) => w.includes(HAND_EDIT(desktopCfg())))
   expect(warning).toBeDefined()
@@ -610,7 +612,7 @@ test("a malformed Claude Desktop config is left untouched, with the server to ad
 
 // --- machine-wide config and non-interactive project scope -----------------
 
-test("a non-interactive project run leaves Codex and Claude Desktop alone", async () => {
+test("a non-interactive project run leaves Codex alone, and never reaches Claude Desktop", async () => {
   const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
   await mkdir(join(home, ".claude"))
   await mkdir(join(home, ".codex"))
@@ -620,7 +622,7 @@ test("a non-interactive project run leaves Codex and Claude Desktop alone", asyn
   try {
     const plan = await planInit(opts(repo, "project", false))
     expect(plan.agents).toEqual(["claude"])
-    expect(plan.notConfigured).toEqual(["codex", "claude-desktop"])
+    expect(plan.notConfigured).toEqual(["codex"])
     expect(plan.changes.every((c) => c.path.startsWith(repo))).toBe(true)
     expect(plan.configs.map((c) => c.agent)).toEqual(["claude"])
     expect(plan.printOnly).toEqual([])
@@ -630,11 +632,11 @@ test("a non-interactive project run leaves Codex and Claude Desktop alone", asyn
   }
 })
 
-test("a non-interactive global run still configures Codex and Claude Desktop", async () => {
+test("a non-interactive global run still configures Codex, but not Claude Desktop", async () => {
   await mkdir(join(home, ".codex"))
   await mkdir(join(home, ".config", "Claude"), { recursive: true })
   const plan = await planInit(opts(home, "global", false))
-  expect(plan.agents).toEqual(["codex", "claude-desktop"])
+  expect(plan.agents).toEqual(["codex"])
   expect(plan.notConfigured).toEqual([])
 })
 
@@ -645,6 +647,132 @@ test("an interactive project run configures them and leaves nothing out", async 
     const plan = await planInit(opts(repo, "project", true))
     expect(plan.agents).toEqual(["codex"])
     expect(plan.notConfigured).toEqual([])
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
+// --- choosing the agents ----------------------------------------------------
+
+test("Claude Desktop is not configured by default, even when its config directory exists", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  await mkdir(join(home, ".claude"))
+  await mkdir(join(home, ".config", "Claude"), { recursive: true })
+  try {
+    for (const scope of ["global", "project"] as const) {
+      const plan = await planInit(opts(scope === "global" ? home : repo, scope))
+      expect(plan.agents).toEqual(["claude"])
+      expect(plan.notConfigured).toEqual([])
+      expect(plan.changes.some((c) => c.path === desktopCfg())).toBe(false)
+      expect(plan.printOnly.join(" ")).not.toContain("Claude Desktop")
+    }
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
+test("explicit agents configure exactly those, whatever is detected", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  await mkdir(join(home, ".claude"))
+  await mkdir(join(home, ".codex"))
+  try {
+    const plan = await planInit({ ...opts(repo, "project"), agents: ["cursor"] })
+    expect(plan.agents).toEqual(["cursor"])
+    expect(plan.configs.map((c) => c.agent)).toEqual(["cursor"])
+    const paths = plan.changes.map((c) => c.path)
+    expect(paths).toContain(join(repo, ".cursor", "mcp.json"))
+    expect(paths).not.toContain(join(repo, ".mcp.json"))
+    expect(paths.some((p) => p.startsWith(join(home, ".codex")))).toBe(false)
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
+test("an explicit agent that is not installed is configured anyway, with no --project warning", async () => {
+  const plan = await planInit({ ...opts(home, "global"), agents: ["claude"] })
+  expect(plan.agents).toEqual(["claude"])
+  expect(plan.changes.map((c) => c.path)).toContain(join(home, ".claude.json"))
+  expect(plan.warnings.join(" ")).not.toContain("No supported agent")
+})
+
+test("explicit Codex at non-interactive project scope is configured", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  await mkdir(join(home, ".codex"))
+  try {
+    const plan = await planInit({ ...opts(repo, "project", false), agents: ["codex"] })
+    expect(plan.agents).toEqual(["codex"])
+    expect(plan.notConfigured).toEqual([])
+    expect(plan.configs.map((c) => c.agent)).toEqual(["codex"])
+    expect(plan.changes.map((c) => c.path)).toContain(join(home, ".codex", "config.toml"))
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
+test("--agents claude-desktop still configures Claude Desktop", async () => {
+  await mkdir(join(home, ".config", "Claude"), { recursive: true })
+  const plan = await planInit({ ...opts(home, "global", false), agents: ["claude-desktop"] })
+  expect(plan.agents).toEqual(["claude-desktop"])
+  expect(plan.configs).toEqual([{ agent: "claude-desktop", path: desktopCfg() }])
+  expect(plan.nextSteps.join(" ")).toMatch(/[Qq]uit Claude Desktop completely/)
+})
+
+test("Claude Desktop asked for on a platform with no config path is skipped, with a warning", async () => {
+  const plan = await planInit({ ...opts(home, "global"), platform: "win32", agents: ["claude", "claude-desktop"] })
+  expect(plan.agents).toEqual(["claude"])
+  expect(plan.configs.map((c) => c.agent)).toEqual(["claude"])
+  expect(plan.warnings.join(" ")).toContain("Claude Desktop")
+})
+
+const OTHER_NOTE = "For another MCP client, add this server to its MCP config:"
+
+test("the other MCP client alone writes the shared instructions and the config to paste", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  try {
+    const plan = await planInit({ ...opts(repo, "project"), agents: [], otherClient: true })
+    expect(plan.agents).toEqual([])
+    expect(plan.otherClient).toBe(true)
+    expect(plan.configs).toEqual([])
+    const agentsMd = plan.changes.find((c) => c.path === join(repo, "AGENTS.md"))
+    expect(agentsMd?.content).toContain("team_knowledge_map")
+    // No agent asked for anything else: no CLAUDE.md import, no ignored config.
+    expect(plan.changes.map((c) => c.path)).toEqual([join(repo, "AGENTS.md")])
+    const note = plan.printOnly.find((n) => n.startsWith(OTHER_NOTE))
+    expect(note).toBeDefined()
+    const e = entry("/abs/cli.ts")
+    expect(note).toContain(JSON.stringify({ mcpServers: { cairn: e } }, null, 2))
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
+test("the other MCP client honours an existing CLAUDE.md as the shared file", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  await writeFile(join(repo, "CLAUDE.md"), "# mine\n", "utf-8")
+  try {
+    const plan = await planInit({ ...opts(repo, "project"), otherClient: true, agents: [] })
+    expect(plan.changes.map((c) => c.path)).toEqual([join(repo, "CLAUDE.md")])
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
+test("the other MCP client at global scope writes no file and prints the rules instead", async () => {
+  const plan = await planInit({ ...opts(home, "global"), agents: [], otherClient: true })
+  expect(plan.changes).toEqual([])
+  expect(plan.printOnly.some((n) => n.startsWith(OTHER_NOTE))).toBe(true)
+  // A printOnly note is what makes the CLI print the rules block below them.
+  expect(plan.printOnly.join(" ")).toMatch(/paste the block below/)
+})
+
+test("the other MCP client alongside Claude Code adds its note to Claude Code's plan", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  try {
+    const plan = await planInit({ ...opts(repo, "project"), agents: ["claude"], otherClient: true })
+    expect(plan.agents).toEqual(["claude"])
+    expect(plan.configs.map((c) => c.agent)).toEqual(["claude"])
+    expect(plan.changes.filter((c) => c.path === join(repo, "AGENTS.md"))).toHaveLength(1)
+    expect(plan.printOnly.some((n) => n.startsWith(OTHER_NOTE))).toBe(true)
   } finally {
     await rm(repo, { recursive: true, force: true })
   }

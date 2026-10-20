@@ -144,12 +144,117 @@ test("the agents to configure are named by label, and the rules block prints onc
   await writeDocs(repoRoot, FOUR)
   await mkdir(join(home, ".cursor"), { recursive: true })
   // Cursor's global rules and Claude Desktop each print a paste-this note.
-  const desktop = process.platform === "darwin"
-  if (desktop) await mkdir(join(home, "Library", "Application Support", "Claude"), { recursive: true })
-  await runInitCommand(await deps({ resolveScope: async () => "global", repo: null }))
-  expect(said()).toContain(desktop ? "Claude Code, Cursor and Claude Desktop" : "Claude Code and Cursor")
+  // Claude Desktop is configured only when asked for, so it is asked for here.
+  await runInitCommand(
+    await deps({
+      resolveScope: async () => "global",
+      repo: null,
+      agentsFlag: { agents: ["claude", "cursor", "claude-desktop"], other: false },
+    }),
+  )
+  expect(said()).toContain("Claude Code, Cursor and Claude Desktop")
   expect(said()).not.toContain("claude and cursor")
   expect(said().split("call team_knowledge_map").length - 1).toBe(1)
+})
+
+// --- choosing the agents ------------------------------------------------------
+
+test("the picker is offered what was found, and its answer is what gets configured", async () => {
+  await writeDocs(repoRoot, FOUR)
+  await mkdir(join(home, ".cursor"), { recursive: true })
+  // Detected but never offered: Claude Desktop is configured only by name.
+  if (process.platform === "darwin") {
+    await mkdir(join(home, "Library", "Application Support", "Claude"), { recursive: true })
+  }
+  const offered: string[] = []
+  const outcome = await runInitCommand(
+    await deps({
+      chooseAgents: async (found) => {
+        offered.push(...found)
+        return { agents: ["cursor"], other: false }
+      },
+    }),
+  )
+  expect(outcome).toBe("written")
+  expect(offered).toEqual(["claude", "cursor"])
+  expect(existsSync(join(repoRoot, ".cursor", "mcp.json"))).toBe(true)
+  expect(existsSync(join(repoRoot, ".mcp.json"))).toBe(false)
+  // The picker already showed what was found; the ticked list is not repeated.
+  expect(said()).not.toContain("not found")
+})
+
+test("cancelling the picker cancels the run with nothing written", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const before = await footprint()
+  const outcome = await runInitCommand(await deps({ chooseAgents: async () => null }))
+  expect(outcome).toBe("cancelled")
+  expect(await footprint()).toEqual(before)
+})
+
+test("choosing nothing in the picker cancels the run with nothing written", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const before = await footprint()
+  const outcome = await runInitCommand(await deps({ chooseAgents: async () => ({ agents: [], other: false }) }))
+  expect(outcome).toBe("cancelled")
+  expect(await footprint()).toEqual(before)
+})
+
+test("choosing only the other MCP client writes the instructions and prints the config", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const outcome = await runInitCommand(await deps({ chooseAgents: async () => ({ agents: [], other: true }) }))
+  expect(outcome).toBe("written")
+  expect(await readFile(join(repoRoot, "AGENTS.md"), "utf-8")).toContain("team_knowledge_map")
+  expect(existsSync(join(repoRoot, ".mcp.json"))).toBe(false)
+  expect(said()).toContain("For another MCP client, add this server to its MCP config:")
+  expect(said()).toContain("Other MCP client")
+  // Nothing to prove is not the same as nothing proven.
+  expect(said()).not.toContain("None of your agents could start cairn")
+})
+
+test("--agents skips the picker", async () => {
+  await writeDocs(repoRoot, FOUR)
+  let asked = false
+  const outcome = await runInitCommand(
+    await deps({
+      agentsFlag: { agents: ["claude"], other: false },
+      chooseAgents: async () => {
+        asked = true
+        return null
+      },
+    }),
+  )
+  expect(outcome).toBe("written")
+  expect(asked).toBe(false)
+})
+
+test("a dry run does not ask which agents to configure", async () => {
+  await writeDocs(repoRoot, FOUR)
+  let asked = false
+  const outcome = await runInitCommand(
+    await deps({
+      dryRun: true,
+      chooseAgents: async () => {
+        asked = true
+        return null
+      },
+    }),
+  )
+  expect(outcome).toBe("planned")
+  expect(asked).toBe(false)
+})
+
+test("a non-interactive run does not ask which agents to configure", async () => {
+  let asked = false
+  await runInitCommand(
+    await deps({
+      interactive: false,
+      chooseAgents: async () => {
+        asked = true
+        return null
+      },
+    }),
+  )
+  expect(asked).toBe(false)
 })
 
 test("declining the config preview cancels with nothing written", async () => {
