@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite"
 import { afterEach, expect, test } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { darwinSqlite } from "../src/native/assets"
@@ -29,6 +29,7 @@ const DIMS = 1024
 async function fresh(root: string, body: string): Promise<unknown> {
   const runtime = join(import.meta.dir, "..", "src", "native", "sqlite-runtime.ts")
   const script = `import { Database } from "bun:sqlite"
+import { join } from "node:path"
 import { loadVec, prepareSqlite, runSelftestVec } from ${JSON.stringify(runtime)}
 const root = ${JSON.stringify(root)}
 ${body}`
@@ -109,3 +110,53 @@ test("selftest passes without vec0, because that target falls back to the scan",
   expect(lines.some((l) => l.startsWith("vec unavailable: "))).toBe(true)
   expect(lines).toContain("fts5 bm25 ok")
 })
+
+const sha256 = (b: Uint8Array): string => new Bun.CryptoHasher("sha256").update(b).digest("hex")
+
+// A failed setCustomSQLite leaves bun:sqlite pointed at the library that would
+// not load, so every later `new Database` throws. These check cairn still
+// opens a database afterwards. Only darwin chooses its own SQLite.
+test.skipIf(process.platform !== "darwin" || darwinSqlite === null)(
+  "a damaged extracted SQLite is written again rather than reused",
+  async () => {
+    const root = await tempRoot()
+    const real = await readFile(darwinSqlite!)
+    const dest = join(root, "lib", sha256(real), "libsqlite3.dylib")
+    await mkdir(join(dest, ".."), { recursive: true })
+    await writeFile(dest, "not a library")
+    const got = (await fresh(
+      root,
+      `const runtime = prepareSqlite(root)
+const db = new Database(":memory:")
+const v = db.query("SELECT sqlite_version() AS v").get().v
+db.close()
+console.log(JSON.stringify({ custom: runtime.custom, reason: runtime.reason ?? null, v }))`,
+    )) as { custom: boolean; reason: string | null; v: string }
+    expect(got).toEqual({ custom: true, reason: null, v: "3.54.1" })
+    expect(sha256(await readFile(dest))).toBe(sha256(real))
+  },
+)
+
+test.skipIf(process.platform !== "darwin")(
+  "an SQLite that will not load falls back to the system one",
+  async () => {
+    const root = await tempRoot()
+    // Extraction succeeds and writes exactly this, so rewriting cannot help.
+    const garbage = join(root, "garbage.dylib")
+    await writeFile(garbage, "not a library")
+    const got = (await fresh(
+      root,
+      `const runtime = prepareSqlite(root, ${JSON.stringify(garbage)})
+const db = new Database(join(root, "store.db"))
+db.run("CREATE TABLE t (x)")
+db.run("INSERT INTO t VALUES (1)")
+const n = db.query("SELECT count(*) AS n FROM t").get().n
+db.close()
+console.log(JSON.stringify({ custom: runtime.custom, reason: runtime.reason ?? null, n }))`,
+    )) as { custom: boolean; reason: string | null; n: number }
+    expect(got.custom).toBe(false)
+    expect(got.reason).toBeString()
+    expect(got.reason!.length).toBeGreaterThan(0)
+    expect(got.n).toBe(1)
+  },
+)

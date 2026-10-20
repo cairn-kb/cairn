@@ -17,6 +17,8 @@ Run on 2026-10-20, locally, on an Apple silicon Mac (macOS 26.3.1) with Bun
 | darwin-x64 | Rosetta (`arch -x86_64`) | 3.54.1 (custom, embedded) | **yes**, v0.1.9 | ok | ok | 0 |
 | linux-x64 | `debian:bookworm-slim`, amd64 under emulation | 3.51.2 (Bun's own) | **yes**, v0.1.9 | ok | ok | 0 |
 
+CI now runs darwin-x64 natively on `macos-15-intel`; this table is the earlier local run.
+
 **PASS on all three targets.** Every target can use `vec0`; none needs the JS
 scan fallback.
 

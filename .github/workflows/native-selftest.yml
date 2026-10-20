@@ -17,6 +17,9 @@ on:
       - "src/native/**"
       - "scripts/build-sqlite.sh"
       - ".github/workflows/native-selftest.yml"
+      - ".github/workflows/release.yml"
+      - "src/store.ts"
+      - "src/cli.ts"
       - "package.json"
       - "bun.lock"
 
@@ -82,9 +85,10 @@ jobs:
           - target: darwin-x64
             os: macos-15-intel
           # In a bare container: no Homebrew, no node_modules, no system sqlite3.
+          # Pinned to bookworm-slim's linux/amd64 manifest.
           - target: linux-x64
             os: ubuntu-latest
-            container: debian:bookworm-slim
+            container: debian:bookworm-slim@sha256:a4672c0cb26fbdde88e38fa2dfb6c681942306680e41e4378b28770b6e79ee91
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

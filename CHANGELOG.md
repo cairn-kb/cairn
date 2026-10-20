@@ -8,6 +8,8 @@
   under the cairn data directory (`lib/`) on first run. Every binary also
   carries the sqlite-vec extension, ready for semantic search; nothing uses it
   yet.
+  A damaged extracted copy is written again, and a library macOS refuses to
+  load leaves cairn on the system SQLite rather than failing every command.
 
 ## [0.9.1] — 2026-10-20
 

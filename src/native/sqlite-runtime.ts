@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite"
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { darwinSqlite, vec0, type NativeTarget } from "./assets"
 
@@ -14,19 +14,31 @@ const message = (e: unknown): string => (e instanceof Error ? e.message : String
  * Copy an embedded file out to `<root>/lib/<sha256>/<name>`, where SQLite can
  * open it: neither dlopen nor loadExtension can read `/$bunfs/`. Named by its
  * content, so a new release lands beside the old one instead of over a library
- * another running cairn has mapped, and an existing copy is reused. Written to
- * a temp name and renamed, so a reader never sees half a library.
+ * another running cairn has mapped, and an existing copy is reused once its
+ * size and hash match; anything else there (a crash's empty file, a changed
+ * one) is written again. Written to a temp name and renamed, so a reader never
+ * sees half a library.
  */
 function extract(embedded: string, root: string, name: string): string {
   const bytes = readFileSync(embedded)
-  const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+  const sha256 = (b: Uint8Array): string => new Bun.CryptoHasher("sha256").update(b).digest("hex")
+  const hash = sha256(bytes)
   const dir = join(root, "lib", hash)
   const dest = join(dir, name)
-  if (existsSync(dest)) return dest
+  if (existsSync(dest) && statSync(dest).size === bytes.length && sha256(readFileSync(dest)) === hash) return dest
   mkdirSync(dir, { recursive: true })
   const temp = join(dir, `.${process.pid}-${crypto.randomUUID()}`)
-  writeFileSync(temp, bytes, { mode: 0o755 })
-  renameSync(temp, dest)
+  try {
+    writeFileSync(temp, bytes, { mode: 0o755 })
+    renameSync(temp, dest)
+  } catch (e) {
+    try {
+      unlinkSync(temp)
+    } catch {
+      // Never written, or already gone.
+    }
+    throw e
+  }
   return dest
 }
 
@@ -46,6 +58,9 @@ const sqliteVersion = (): string => {
 
 let prepared: SqliteRuntime | undefined
 
+// Where bun:sqlite looks on darwin when nothing else is chosen.
+const SYSTEM_SQLITE = "/usr/lib/libsqlite3.dylib"
+
 /**
  * Point bun:sqlite at the SQLite this binary carries. Call it before the first
  * `new Database`: the library is chosen once per process, and choosing it
@@ -57,17 +72,31 @@ let prepared: SqliteRuntime | undefined
  * binary agree. Linux has Bun's own SQLite, which loads extensions. It never
  * throws: without its own library cairn still searches, it just cannot load
  * vec0.
+ *
+ * `embedded` is the library to use; tests pass one that will not load.
  */
-export function prepareSqlite(root: string): SqliteRuntime {
+export function prepareSqlite(root: string, embedded: string | null = darwinSqlite): SqliteRuntime {
   if (prepared) return prepared
   let custom = false
   let reason: string | undefined
-  if (process.platform === "darwin" && darwinSqlite) {
+  if (process.platform === "darwin" && embedded) {
+    let path: string | undefined
     try {
-      Database.setCustomSQLite(extract(darwinSqlite, root, "libsqlite3.dylib"))
+      path = extract(embedded, root, "libsqlite3.dylib")
+      Database.setCustomSQLite(path)
       custom = true
     } catch (e) {
       reason = message(e)
+      // A library that fails to load stays chosen, and every later
+      // `new Database` throws the same error. Choosing the system one again
+      // undoes that, so cairn runs on Apple's SQLite instead of not at all.
+      if (path !== undefined) {
+        try {
+          Database.setCustomSQLite(SYSTEM_SQLITE)
+        } catch {
+          // Keep the first reason; the next `new Database` reports its own.
+        }
+      }
     }
   }
   prepared = { sqliteVersion, custom, ...(reason ? { reason } : {}) }
