@@ -48,8 +48,8 @@ function headingLines(text: string): [number, number][] {
  * lines lies in exactly one passage span, the spans ascend, and each span is
  * the slice its offset and length name.
  */
-function expectCoverage(text: string, passages: Passage[], opts: { trimmed?: boolean } = {}): void {
-  const trimmed = opts.trimmed ?? true
+function expectCoverage(text: string, passages: Passage[]): void {
+  const headings = headingLines(text)
   let end = 0
   passages.forEach((p, i) => {
     expect(p.ordinal).toBe(i)
@@ -59,9 +59,15 @@ function expectCoverage(text: string, passages: Passage[], opts: { trimmed?: boo
     const span = text.slice(p.offset, p.offset + p.length)
     expect(span.length).toBe(p.length)
     expect(span.trim().length).toBeGreaterThan(0)
-    if (trimmed) expect(span).toBe(span.trim())
+    expect(span).toBe(span.trim())
+    // A span neither starts nor ends inside a heading line: headings sit
+    // between passages or inside one, never on its edge.
+    const last = p.offset + p.length - 1
+    for (const [s, e] of headings) {
+      if (p.offset >= s && p.offset < e) throw new Error(`passage ${i} starts on the heading ${JSON.stringify(text.slice(s, e))}`)
+      if (last >= s && last < e) throw new Error(`passage ${i} ends on the heading ${JSON.stringify(text.slice(s, e))}`)
+    }
   })
-  const headings = headingLines(text)
   for (let i = 0; i < text.length; i++) {
     if (/\s/.test(text[i]!)) continue
     if (headings.some(([s, e]) => i >= s && i < e)) continue
@@ -96,6 +102,38 @@ test("a short section merges forward under the common ancestor", async () => {
   expect(ps[0]!.offset).toBe(text.indexOf("short intro"))
   expect(ps[0]!.offset + ps[0]!.length).toBe(text.length)
   expectCoverage(text, ps)
+})
+
+test("a merged short section stays with the next section's first paragraph", async () => {
+  // Short body plus the next paragraph is over the target but under the cap:
+  // they stay together rather than leaving "short intro" a passage alone.
+  const one = "# T\n\nshort intro\n\n## A\n\n" + a(1190) + "\n\n" + b(500)
+  const ps1 = await chunk("T", one)
+  expect(ps1[0]!.offset).toBe(one.indexOf("short intro"))
+  expect(ps1[0]!.offset + ps1[0]!.length).toBe(one.indexOf("\n\nbbb"))
+  expect(ps1[0]!.heading).toBe("T")
+  expectCoverage(one, ps1)
+
+  // Over the cap: the split falls after the heading, never before it.
+  const two = "# T\n\nshort intro\n\n## A\n\n" + a(3000)
+  const ps2 = await chunk("T", two)
+  expect(ps2[0]!.offset).toBe(two.indexOf("short intro"))
+  expect(ps2[0]!.length).toBeGreaterThan(two.indexOf("aaa") - ps2[0]!.offset)
+  for (const p of ps2) expect(p.length).toBeLessThanOrEqual(CHUNK_CAP)
+  expectCoverage(two, ps2)
+
+  // A sentence end in the short body is not a place to split either.
+  const three = "# T\n\nShort intro. \n\n## A\n\n" + "x".repeat(3000)
+  const ps3 = await chunk("T", three)
+  expect(ps3[0]!.offset).toBe(three.indexOf("Short intro."))
+  expect(ps3[0]!.length).toBeGreaterThan(three.indexOf("xxx") - ps3[0]!.offset)
+  expectCoverage(three, ps3)
+})
+
+test("only a level-1 heading that repeats the title is folded into it", async () => {
+  const text = "## T\n\n" + a(300)
+  const ps = await chunk("T", text)
+  expect(ps.map((p) => p.heading)).toEqual(["T › T"])
 })
 
 test("packs paragraphs to the target and never exceeds the cap", async () => {

@@ -70,11 +70,13 @@ export function passageText(text: string, p: Passage): string {
  *
  * 1. Split at ATX headings (`#` to `######`) outside fenced code.
  * 2. A section whose body is shorter than `MIN_SECTION` is prepended to the
- *    next section, under the two breadcrumbs' longest common prefix.
+ *    next section, under the two breadcrumbs' longest common prefix, and
+ *    stays with that section's first paragraph unless the cap splits them.
  * 3. Within a section, pack whole paragraphs (a fenced block is one) up to
  *    `CHUNK_TARGET`; a paragraph longer than `CHUNK_CAP` is split after
  *    sentence ends, falling back to whitespace.
- * 4. Spans exclude heading lines at their edges and surrounding whitespace.
+ * 4. No span starts or ends on a heading line, and spans exclude
+ *    surrounding whitespace.
  *
  * A document with text but no body under any heading is one passage spanning
  * the whole text; blank text has none.
@@ -85,7 +87,10 @@ export async function chunk(title: string, text: string): Promise<Passage[]> {
   const spans: { heading: string; span: Span }[] = []
   for (const section of mergeShort(sections, title)) {
     const heading = section.crumbs.join(SEPARATOR)
-    for (const span of pack(text, section.span, fences, headingLines)) spans.push({ heading, span })
+    for (const packed of pack(text, section.span, fences, headingLines)) {
+      const span = offHeadings(text, packed, headingLines)
+      if (span) spans.push({ heading, span })
+    }
   }
   if (spans.length === 0) spans.push({ heading: title, span: [0, text.length] })
   return Promise.all(
@@ -140,8 +145,8 @@ function parse(title: string, text: string): { sections: Section[]; fences: Span
         while (stack.length > 0 && stack[stack.length - 1]!.level >= level) stack.pop()
         stack.push({ level, text: label })
         const path = stack.map((s) => s.text).filter((s) => s.length > 0)
-        // A top heading that repeats the title is the title, not a level below it.
-        if (path[0] === title) path.shift()
+        // A level-1 heading that repeats the title is the title, not a level below it.
+        if (stack[0]!.level === 1 && stack[0]!.text === title) path.shift()
         crumbs = [title, ...path]
         bodyStart = next
       }
@@ -178,14 +183,14 @@ function commonPrefix(x: string[], y: string[], title: string): string[] {
 function pack(text: string, body: Span, fences: Span[], headingLines: Span[]): Span[] {
   const out: Span[] = []
   let current: Span | null = null
-  for (const para of paragraphs(text, body, fences, headingLines)) {
+  for (const { span: para, floor } of paragraphs(text, body, fences, headingLines)) {
     if (current && para[1] - current[0] <= CHUNK_TARGET) {
       current = [current[0], para[1]]
       continue
     }
     if (current) out.push(current)
     current = null
-    if (para[1] - para[0] > CHUNK_CAP) out.push(...splitLong(text, para))
+    if (para[1] - para[0] > CHUNK_CAP) out.push(...splitLong(text, para, floor))
     else current = para
   }
   if (current) out.push(current)
@@ -193,11 +198,28 @@ function pack(text: string, body: Span, fences: Span[], headingLines: Span[]): S
 }
 
 /**
- * The body's paragraphs, trimmed. A break inside a fenced block does not
- * count, and a paragraph that is only a heading line (left inside a merged
- * section) joins the paragraph after it so no span ends on a heading.
+ * A paragraph to pack: its trimmed span, and `floor`, the first index a split
+ * may fall on. The floor is past any heading line inside the paragraph, so a
+ * split never leaves a merged short body on its own or a span on a heading.
  */
-function paragraphs(text: string, [start, end]: Span, fences: Span[], headingLines: Span[]): Span[] {
+interface Paragraph {
+  span: Span
+  floor: number
+}
+
+/**
+ * The body's paragraphs, trimmed. A break inside a fenced block does not
+ * count.
+ *
+ * Heading lines only appear inside a body once `mergeShort` has prepended a
+ * short section to the next one. The short body, the heading and the next
+ * section's first paragraph of content then become ONE paragraph, whatever
+ * the target: packed separately, the short body would close as a passage of
+ * its own and the next would start on the heading, which is exactly what the
+ * merge exists to prevent. Only the cap can split it, and only after the
+ * heading.
+ */
+function paragraphs(text: string, [start, end]: Span, fences: Span[], headingLines: Span[]): Paragraph[] {
   const body = text.slice(start, end)
   const raw: Span[] = []
   let from = start
@@ -208,32 +230,52 @@ function paragraphs(text: string, [start, end]: Span, fences: Span[], headingLin
     from = at + m[0].length
   }
   raw.push([from, end])
-  const out: Span[] = []
-  let carry: number | null = null
+  let out: Paragraph[] = []
+  // Where a group still waiting for its first paragraph of content begins.
+  let pending: number | null = null
   for (const [s, e] of raw) {
     const span = trim(text, s, e)
     if (!span) continue
-    const isHeading = headingLines.some(([hs, he]) => trim(text, hs, he)?.[0] === span[0] && span[1] <= he)
-    if (isHeading) {
-      carry ??= span[0]
+    const inside = headingLines.filter(([hs, he]) => he > span[0] && hs < span[1])
+    if (inside.length === 0) {
+      out.push({ span: [pending ?? span[0], span[1]], floor: span[0] })
+      pending = null
       continue
     }
-    out.push([carry ?? span[0], span[1]])
-    carry = null
+    // Everything before a heading in this body is merged short material
+    // (under MIN_SECTION in all), so all of it joins the group.
+    const groupStart: number = out.length > 0 ? out[0]!.span[0] : (pending ?? span[0])
+    out = []
+    const lastHeadingEnd = Math.max(...inside.map(([, he]) => he))
+    const content = trim(text, lastHeadingEnd, span[1])
+    if (content) {
+      out.push({ span: [groupStart, span[1]], floor: content[0] })
+      pending = null
+    } else {
+      pending = groupStart
+    }
   }
-  if (carry !== null) out.push(trim(text, carry, end)!)
+  if (pending !== null) {
+    const rest = trim(text, pending, end)
+    if (rest) out.push({ span: rest, floor: rest[0] })
+  }
   return out
 }
 
-/** Split a paragraph longer than the cap: after sentence ends, else at whitespace, else hard. */
-function splitLong(text: string, [start, end]: Span): Span[] {
+/**
+ * Split a paragraph longer than the cap: after sentence ends, else at
+ * whitespace, else hard. No split falls before `floor`.
+ */
+function splitLong(text: string, [start, end]: Span, floor: number): Span[] {
   const out: Span[] = []
   let at = start
   while (end - at > CHUNK_CAP) {
+    // A floor the cap cannot reach is ignored; the cap is the harder rule.
+    const lo = floor > at && floor < at + CHUNK_CAP ? floor : at
     const cut =
-      lastBreak(text, at, at + CHUNK_TARGET, /[.!?]\s/g) ??
-      lastBreak(text, at, at + CHUNK_CAP, /[.!?]\s/g) ??
-      lastBreak(text, at, at + CHUNK_CAP, /\s/g) ??
+      lastBreak(text, lo, at + CHUNK_TARGET, /[.!?]\s/g) ??
+      lastBreak(text, lo, at + CHUNK_CAP, /[.!?]\s/g) ??
+      lastBreak(text, lo, at + CHUNK_CAP, /\s/g) ??
       hardCut(text, at + CHUNK_CAP)
     const span = trim(text, at, cut)
     if (span) out.push(span)
@@ -243,6 +285,22 @@ function splitLong(text: string, [start, end]: Span): Span[] {
   const rest = trim(text, at, end)
   if (rest) out.push(rest)
   return out
+}
+
+/**
+ * Move a span's edges off heading lines: a start on a heading moves to the
+ * first content after it, an end on one moves back before it. Null when
+ * nothing is left.
+ */
+function offHeadings(text: string, [s, e]: Span, headingLines: Span[]): Span | null {
+  for (const [hs, he] of headingLines) {
+    if (s >= hs && s < he) s = trim(text, he, e)?.[0] ?? e
+  }
+  for (let i = headingLines.length - 1; i >= 0; i--) {
+    const [hs, he] = headingLines[i]!
+    if (e - 1 >= hs && e - 1 < he) e = trim(text, s, hs)?.[1] ?? s
+  }
+  return s < e ? [s, e] : null
 }
 
 /**
