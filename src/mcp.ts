@@ -717,7 +717,7 @@ export function createMcpServer(
       // in-process caller that should not have to carry this along.
       //
       // Guarded against both a synchronous throw and a rejection: this hook
-      // is instrumentation (Task 13 wires it to telemetry), not part of the
+      // is instrumentation (the first-answer metric uses it), not part of the
       // search contract, so a hook that misbehaves must never turn an
       // agent's search into an error.
       try {

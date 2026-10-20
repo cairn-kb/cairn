@@ -628,7 +628,7 @@ test("an added folder may start with ~ for the home directory", async () => {
   expect(await docCount()).toBe(3)
 })
 
-// --- fix round 1 --------------------------------------------------------------
+// --- dry runs and the code-scan launch ---------------------------------------
 
 test("a non-interactive dry run from a subdirectory: config at cwd, fill labelled and at the repo root", async () => {
   await writeDocs(repoRoot, FOUR)
