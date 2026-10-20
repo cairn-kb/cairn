@@ -1193,3 +1193,151 @@ export const DOCUMENT_CONTRACT_CASES: ContractCase[] = [
     },
   },
 ]
+
+// --- Passages ----------------------------------------------------------------
+//
+// Search answers with the passage of a document that matches, not the whole
+// document. Both stores cut documents with the same chunker, so headings and
+// offsets are the same on both, and an offset one hands out is a JavaScript
+// string index into `Document.text` that a read at that offset lands on.
+
+/** A body long enough to stay its own section (the chunker merges short ones). */
+const body = (words: string): string =>
+  [
+    `This part is about ${words}.`,
+    `Everything said here concerns ${words} and nothing else.`,
+    `A reader looking for ${words} should land on this part.`,
+    `It runs on for a few sentences so it is not merged into a neighbour.`,
+    `That keeps ${words} in a passage of its own.`,
+  ].join(" ")
+
+/**
+ * Three sections under one title. The first carries characters outside the
+ * Basic Multilingual Plane and accents, so an offset counted in bytes or in
+ * code points lands somewhere other than one counted in UTF-16 units.
+ */
+const runbook = (sections: ("billing" | "deploys" | "alerts")[]): string => {
+  const parts: Record<string, string> = {
+    billing: `## Billing\n\nCafé crème 🚀🚀 — ${body("invoices and stripe refunds")}`,
+    deploys: `## Deploys\n\n${body("wrangler rollouts")}`,
+    alerts: `## Alerts\n\n${body("pager escalation")}`,
+  }
+  return sections.map((s) => parts[s]).join("\n\n")
+}
+
+export const PASSAGE_CONTRACT_CASES: ContractCase[] = [
+  {
+    name: "a passage hit points at its span",
+    async run(store, expect) {
+      const { document } = await store.importDocument({
+        title: "Runbook", text: runbook(["billing", "deploys", "alerts"]), source: "runbook.md",
+      })
+      const { hits } = await store.searchPassages("wrangler rollouts")
+      const hit = hits[0]!
+      expect(hit.doc).toBe(document.id)
+      expect(hit.heading).toBe("Runbook › Deploys")
+      expect(hit.title).toBe("Runbook")
+      expect(hit.source).toBe("runbook.md")
+      const doc = await store.getDocument(hit.doc)
+      expect(doc!.text.slice(hit.offset, hit.offset + hit.length)).toBe(hit.text)
+      expect(hit.text.startsWith("This part is about wrangler rollouts.")).toBe(true)
+    },
+  },
+  {
+    name: "read at a passage's offset starts on it",
+    async run(store, expect) {
+      await store.importDocument({
+        title: "Runbook", text: runbook(["billing", "deploys", "alerts"]), source: "runbook.md",
+      })
+      const { hits } = await store.searchPassages("pager escalation")
+      const hit = hits[0]!
+      const doc = await store.getDocument(hit.doc)
+      // What a read at `offset` returns: the text from that string index on.
+      // A store counting offsets in bytes or code points would land past the
+      // passage here, because the first section holds an emoji and accents.
+      expect(doc!.text.slice(hit.offset).startsWith(hit.text.slice(0, 50))).toBe(true)
+    },
+  },
+  {
+    name: "re-import replaces passages",
+    async run(store, expect) {
+      const { document } = await store.importDocument({
+        title: "Runbook", text: runbook(["billing", "deploys", "alerts"]), source: "runbook.md",
+      })
+      expect((await store.searchPassages("pager escalation")).hits.some((h) => h.doc === document.id)).toBe(true)
+      const second = await store.importDocument({
+        title: "Runbook", text: runbook(["billing", "deploys"]), source: "runbook.md",
+      })
+      expect(second.document.id).toBe(document.id)
+      const { hits } = await store.searchPassages("pager escalation")
+      expect(hits.some((h) => h.doc === document.id)).toBe(false)
+      // The sections that stayed are still found.
+      expect((await store.searchPassages("wrangler rollouts")).hits[0]!.doc).toBe(document.id)
+    },
+  },
+  {
+    name: "at most two passages per document",
+    async run(store, expect) {
+      const text = ["One", "Two", "Three", "Four"]
+        .map((h) => `## ${h}\n\n${body(`zebra crossings, part ${h.toLowerCase()}`)}`)
+        .join("\n\n")
+      const { document } = await store.importDocument({ title: "Zebras", text, source: "zebras.md" })
+      const { hits } = await store.searchPassages("zebra")
+      expect(hits.filter((h) => h.doc === document.id).length).toBe(2)
+    },
+  },
+  {
+    name: "limit bounds the hits",
+    async run(store, expect) {
+      await store.importDocument({ title: "A", text: body("quokka habitats"), source: "a.md" })
+      await store.importDocument({ title: "B", text: body("quokka diets"), source: "b.md" })
+      expect((await store.searchPassages("quokka")).hits.length).toBe(2)
+      expect((await store.searchPassages("quokka", { limit: 1 })).hits.length).toBe(1)
+    },
+  },
+  {
+    name: "a blank query has no hits",
+    async run(store, expect) {
+      await store.importDocument({ title: "A", text: body("anything at all"), source: "a.md" })
+      expect(await store.searchPassages("   ")).toEqual({ hits: [] })
+    },
+  },
+  {
+    name: "generated and repo ride on the hit",
+    async run(store, expect) {
+      const gen = await store.importDocument({
+        title: "Overview", text: body("ocelot overview"), source: "gen.md", generated: true, repo: "app",
+      })
+      const human = await store.importDocument({ title: "Notes", text: body("ocelot notes"), source: "notes.md" })
+      const { hits } = await store.searchPassages("ocelot")
+      const g = hits.find((h) => h.doc === gen.document.id)!
+      const h = hits.find((x) => x.doc === human.document.id)!
+      expect(g.generated).toBe(true)
+      expect(g.repo).toBe("app")
+      expect(h.generated).toBe(false)
+      expect(h.repo).toBeNull()
+    },
+  },
+  {
+    name: "searchDocuments still finds whole documents",
+    async run(store, expect) {
+      // The document-ranking case, now answered through passages: X matches
+      // both "deploy" and "wrangler", Z only "wrangler", Y neither. What comes
+      // back is each whole document, not the passage that matched.
+      const { document: x } = await store.importDocument({
+        title: "Deploy",
+        text: "The deploy uses wrangler. Run wrangler deploy from the api folder.",
+        source: "x.md",
+      })
+      const { document: z } = await store.importDocument({
+        title: "Wrangler version",
+        text: "Wrangler is pinned. Pinned to one version.",
+        source: "z.md",
+      })
+      await store.importDocument({ title: "Staging", text: "Staging is separate. Unrelated.", source: "y.md" })
+      const hits = await store.searchDocuments("how do we deploy with wrangler?")
+      expect(hits.map((d) => d.id)).toEqual([x.id, z.id])
+      expect(hits[0]).toEqual(await store.getDocument(x.id))
+    },
+  },
+]

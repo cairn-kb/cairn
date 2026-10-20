@@ -18,6 +18,7 @@ import {
 } from "@cairn-kb/protocol/event-kinds"
 import type { EventKind, EventSink, KbEvent, Stats, EventInput } from "./events"
 import { ftsQuery } from "./search-query"
+import { DEFAULT_PASSAGE_LIMIT } from "@cairn-kb/protocol/retrieval"
 import type {
   CiteInput,
   Claim,
@@ -222,17 +223,14 @@ export class HttpStore implements Store {
     if (!moved) throw new CairnHttpError(404, "not_found", messageFor(404))
   }
 
-  async search(query: string): Promise<Claim[]> {
-    // `Store.search` takes a question in plain words; `/search` takes a full-text
-    // query expression. Handing the raw text over is the bug this hides: `-`
-    // and `*` are query operators, so `nothing-matches-this` is not "no
-    // results", it is a 400 the caller never asked for. `ftsQuery` quotes each
-    // term and ORs them together — the same normalisation FileStore does —
-    // so a claim sharing any word of the question can match, rather than
-    // requiring the whole question verbatim. Ordering is the service's.
-    const fts = ftsQuery(query)
-    if (fts === null) return []
-    const r: { claims: Claim[] } = await this.call(`/search?q=${encodeURIComponent(fts)}`)
+  async search(query: string, opts: SearchOptions = {}): Promise<Claim[]> {
+    // `text` is the question as asked; the service turns it into a full-text
+    // query with the same `ftsQuery` FileStore uses, so the two cannot drift
+    // apart over how a question is quoted. A question with no words in it is
+    // answered here, without a round trip. Ordering is the service's.
+    if (ftsQuery(query) === null) return []
+    const limit = opts.limit === undefined ? "" : `&limit=${opts.limit}`
+    const r: { claims: Claim[] } = await this.call(`/search?text=${encodeURIComponent(query)}${limit}`)
     return r.claims
   }
 
@@ -322,8 +320,20 @@ export class HttpStore implements Store {
     return r.documents
   }
 
-  async searchPassages(_query: string, _opts?: SearchOptions): Promise<{ hits: PassageHit[]; notice?: string }> {
-    throw new Error("not implemented")
+  /**
+   * `/documents?q=` above stays as it is: a passage hit carries a span, not
+   * its whole document, so regrouping hits into documents here would cost one
+   * GET per document. The service answers that endpoint itself.
+   */
+  async searchPassages(query: string, opts: SearchOptions = {}): Promise<{ hits: PassageHit[]; notice?: string }> {
+    // The raw question, as `search` sends it: the service builds the query.
+    if (ftsQuery(query) === null) return { hits: [] }
+    const limit = opts.limit ?? DEFAULT_PASSAGE_LIMIT
+    const semantic = opts.semantic ?? true
+    const r: { hits: PassageHit[]; notice?: string } = await this.call(
+      `/passages?text=${encodeURIComponent(query)}&limit=${limit}&semantic=${semantic}`,
+    )
+    return r.notice === undefined ? { hits: r.hits } : { hits: r.hits, notice: r.notice }
   }
 
   async importDocument(input: DocumentInput): Promise<ImportDocumentResult> {

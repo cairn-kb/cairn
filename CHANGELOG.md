@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Search now finds the passage of a document that matches your question, not
+  just the document. Documents are indexed section by section, so a long
+  document is found by the part of it that answers. The local index rebuilds
+  itself once, the first time cairn opens it after upgrading; nothing needs
+  re-importing.
+
 ## [0.9.1] — 2026-10-20
 
 ### Added

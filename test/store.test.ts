@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { appendFile, mkdtemp, rename, rm } from "node:fs/promises"
+import { Database } from "bun:sqlite"
+import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { notAdoptableMessage } from "@cairn-kb/protocol/event-kinds"
+import { CHUNKER_VERSION } from "@cairn-kb/protocol/retrieval"
+import { serializeDocument, windowOf } from "../src/documents"
 import { EventLog } from "../src/events"
-import { FileStore } from "../src/store"
+import { FileStore, INDEX_SCHEMA_VERSION } from "../src/store"
 import { proposal } from "./store-contract"
 import type { Claim } from "@cairn-kb/protocol/types"
 
@@ -197,7 +200,9 @@ test("rebuildIndex reindexes documents as well as claims", async () => {
   const { document } = await store.importDocument({ title: "T", text: "findable text", source: "a.md" })
   // Simulate the drift rebuild exists for: the file on disk is the truth, the
   // index is a cache, and a cache that silently disagrees is what this repairs.
-  ;(store as unknown as { db: { run(sql: string): void } }).db.run("DELETE FROM documents")
+  const db = (store as unknown as { db: { run(sql: string): void } }).db
+  db.run("DELETE FROM passages")
+  db.run("DELETE FROM passage_meta")
   expect(await store.searchDocuments("findable")).toEqual([])
   // The counts come back named, and a document must be counted as a document:
   // reporting the pair as one sum is what let `cairn rebuild` print "22
@@ -394,4 +399,112 @@ test("FileStore refuses a mine filter rather than answering with the whole queue
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+// --- the passage index ------------------------------------------------------
+
+test("an index from the previous version is rebuilt on open", async () => {
+  const old = await mkdtemp(join(tmpdir(), "cairn-old-index-"))
+  try {
+    // What an install from before passages left behind: a document file on
+    // disk, and an index.db at user_version 0 holding the whole-document
+    // full-text table and nothing else.
+    await mkdir(join(old, "documents"), { recursive: true })
+    await writeFile(
+      join(old, "documents", "doc-legacy.md"),
+      serializeDocument({
+        id: "doc-legacy",
+        title: "Legacy",
+        text: "The capybara migration runs before the release.",
+        source: "legacy.md",
+        created: "2026-01-01T00:00:00.000Z",
+        updated: "2026-01-01T00:00:00.000Z",
+        hash: "h",
+      }),
+      "utf-8",
+    )
+    const before = new Database(join(old, "index.db"))
+    before.run("CREATE VIRTUAL TABLE documents USING fts5(id UNINDEXED, title, text, source UNINDEXED)")
+    before.run("INSERT INTO documents (id, title, text, source) VALUES ('doc-legacy', 'Legacy', 'x', 'legacy.md')")
+    before.close()
+
+    const opened = new FileStore(old, new EventLog(old))
+    await opened.init()
+
+    const after = new Database(join(old, "index.db"))
+    try {
+      expect(INDEX_SCHEMA_VERSION * 100 + CHUNKER_VERSION).toBe(201)
+      expect((after.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(201)
+      const tables = (after.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[])
+        .map((t) => t.name)
+      expect(tables).not.toContain("documents")
+    } finally {
+      after.close()
+    }
+    const { hits } = await opened.searchPassages("capybara")
+    expect(hits.map((h) => h.doc)).toEqual(["doc-legacy"])
+  } finally {
+    await rm(old, { recursive: true, force: true })
+  }
+})
+
+test("an index already at this version is not rebuilt on open", async () => {
+  await store.importDocument({ title: "T", text: "findable text", source: "a.md" })
+  // Drift only a rebuild would repair: if opening rebuilt, the hit would come back.
+  ;(store as unknown as { db: { run(sql: string): void } }).db.run("DELETE FROM passages")
+  const reopened = new FileStore(root, new EventLog(root))
+  await reopened.init()
+  expect((await reopened.searchPassages("findable")).hits).toEqual([])
+})
+
+test("a second process can write while the MCP server holds the index", async () => {
+  const server = new FileStore(root, new EventLog(root))
+  await server.init()
+  const writer = new FileStore(root, new EventLog(root))
+  await writer.init()
+  // The MCP server mid-read: an open read transaction on its connection. In
+  // rollback-journal mode that shared lock refuses every other connection's
+  // commit with SQLITE_BUSY; under WAL a reader never blocks a writer.
+  const held = (server as unknown as { db: Database }).db
+  held.run("BEGIN")
+  held.query("SELECT count(*) FROM passages").get()
+  try {
+    await Promise.all(Array.from({ length: 5 }, (_, i) =>
+      writer.importDocument({ title: `W${i}`, text: `wombat number ${i}`, source: `w${i}.md` })))
+  } finally {
+    held.run("COMMIT")
+  }
+  // And both writing at once, as `cairn import` beside a running server does.
+  await Promise.all([
+    ...Array.from({ length: 5 }, (_, i) =>
+      writer.importDocument({ title: `X${i}`, text: `wombat extra ${i}`, source: `x${i}.md` })),
+    ...Array.from({ length: 5 }, (_, i) =>
+      server.importDocument({ title: `S${i}`, text: `wombat entry ${i}`, source: `s${i}.md` })),
+  ])
+  const { hits } = await server.searchPassages("wombat", { limit: 50 })
+  expect(hits.length).toBe(15)
+}, 20000)
+
+test("a read at a passage's offset starts on the passage", async () => {
+  const text = [
+    "## First",
+    "Ünïcödé 🚀 " + "padding words to make this section long enough to stand alone. ".repeat(5),
+    "## Second",
+    "The axolotl section starts here. " + "more words so the section stays its own passage. ".repeat(5),
+  ].join("\n\n")
+  const { document } = await store.importDocument({ title: "Read", text, source: "read.md" })
+  const { hits } = await store.searchPassages("axolotl")
+  const hit = hits[0]!
+  expect(hit.doc).toBe(document.id)
+  expect(windowOf(document.text, hit.offset).text.startsWith(hit.text.slice(0, 50))).toBe(true)
+})
+
+test("an index deleted by hand reopens, though its write-ahead log was left behind", async () => {
+  const { document } = await store.importDocument({ title: "T", text: "the narwhal note", source: "a.md" })
+  // WAL mode keeps index.db-wal and index.db-shm beside the database; deleting
+  // index.db alone leaves them to be replayed into a fresh, empty file.
+  await rm(join(root, "index.db"), { force: true })
+  const reopened = new FileStore(root, new EventLog(root))
+  await reopened.init()
+  expect((await reopened.searchPassages("narwhal")).hits.map((h) => h.doc)).toEqual([document.id])
 })

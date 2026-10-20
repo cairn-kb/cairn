@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite"
-import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { absentTerms } from "@cairn-kb/protocol/absence"
 import { makeId, parseClaim, serializeClaim } from "./claims"
@@ -7,6 +7,14 @@ import { makeDocId, parseDocument, serializeDocument } from "./documents"
 import type { EventSink, Stats } from "./events"
 import { ftsQuery } from "./search-query"
 import { hashText } from "@cairn-kb/protocol/hash"
+import {
+  CHUNKER_VERSION,
+  DEFAULT_PASSAGE_LIMIT,
+  LEG_DEPTH,
+  capPerDoc,
+  chunk,
+  rrf,
+} from "@cairn-kb/protocol/retrieval"
 import { STATUSES } from "@cairn-kb/protocol/types"
 import type {
   Citation,
@@ -15,6 +23,7 @@ import type {
   Document,
   DocumentInput,
   ImportDocumentResult,
+  Passage,
   PassageHit,
   ProposeInput,
   SearchOptions,
@@ -43,6 +52,30 @@ const DIR: Record<Status, string> = {
   approved: "approved",
   rejected: "rejected",
   retracted: "retracted",
+}
+
+/**
+ * The shape of the tables in `index.db`. Bumped whenever a table changes, so
+ * an index written by an older cairn is rebuilt rather than misread.
+ */
+export const INDEX_SCHEMA_VERSION = 2
+
+/**
+ * What `PRAGMA user_version` holds for an index this build wrote: the table
+ * shape and the chunking rules together, since passages cut by older rules
+ * are stale even when the tables still fit.
+ */
+const USER_VERSION = INDEX_SCHEMA_VERSION * 100 + CHUNKER_VERSION
+
+/** A row of `passage_meta`, as a search reads it back. */
+interface PassageRow {
+  rowid: number
+  doc: string
+  ordinal: number
+  offset: number
+  length: number
+  heading: string
+  hash: string
 }
 
 /**
@@ -102,13 +135,57 @@ export class FileStore implements Store {
     for (const status of STATUSES) {
       await mkdir(join(this.root, DIR[status]), { recursive: true })
     }
-    this.db = new Database(join(this.root, "index.db"))
+    await mkdir(join(this.root, "documents"), { recursive: true })
+    const file = join(this.root, "index.db")
+    // A write-ahead log outlives its database when someone deletes index.db
+    // by hand to force a rebuild. SQLite would replay it into the new, empty
+    // file and fail with a disk I/O error, so a log with no database is
+    // removed first: it holds nothing the files on disk do not.
+    if (!(await Bun.file(file).exists())) {
+      await rm(`${file}-wal`, { force: true })
+      await rm(`${file}-shm`, { force: true })
+    }
+    this.db = new Database(file)
+    // The MCP server keeps this file open for as long as an agent session
+    // runs, and `cairn import` writes to it from a second process meanwhile.
+    // Under WAL a reader never blocks a writer; the timeout covers two writers.
+    // The timeout first, so switching the journal mode waits out a lock too.
+    this.db.run("PRAGMA busy_timeout = 5000")
+    this.db.run("PRAGMA journal_mode = WAL")
     this.db.run(
       "CREATE VIRTUAL TABLE IF NOT EXISTS claims USING fts5(id UNINDEXED, status UNINDEXED, claim, body, tags)",
     )
-    await mkdir(join(this.root, "documents"), { recursive: true })
+    const { user_version } = this.db.query("PRAGMA user_version").get() as { user_version: number }
+    if (user_version === USER_VERSION) {
+      this.createPassageTables()
+      return
+    }
+    // An index from another version: its passage tables may not fit this
+    // build, and the passages in them were cut by other rules. The files are
+    // the truth and the index a cache, so it is dropped and rebuilt from them,
+    // once. `documents` is the whole-document table passages replaced.
+    this.db.transaction(() => {
+      this.db.run("DROP TABLE IF EXISTS documents")
+      this.db.run("DROP TABLE IF EXISTS passages")
+      this.db.run("DROP TABLE IF EXISTS passage_meta")
+      this.createPassageTables()
+    })()
+    await this.rebuildIndex()
+    this.db.run(`PRAGMA user_version = ${USER_VERSION}`)
+  }
+
+  /**
+   * `passages` is what full-text search reads; `passage_meta` is where each
+   * passage sits in its document. One row of each per passage, sharing a
+   * rowid.
+   */
+  private createPassageTables(): void {
     this.db.run(
-      "CREATE VIRTUAL TABLE IF NOT EXISTS documents USING fts5(id UNINDEXED, title, text, source UNINDEXED)",
+      "CREATE VIRTUAL TABLE IF NOT EXISTS passages USING fts5(doc UNINDEXED, ordinal UNINDEXED, heading, text)",
+    )
+    this.db.run(
+      `CREATE TABLE IF NOT EXISTS passage_meta (rowid INTEGER PRIMARY KEY, doc TEXT, ordinal INT, "offset" INT, ` +
+        "length INT, heading TEXT, hash TEXT, UNIQUE(doc, ordinal))",
     )
   }
 
@@ -513,14 +590,32 @@ export class FileStore implements Store {
     return join(this.root, "documents", `${id}.md`)
   }
 
-  private indexDocument(doc: Document): void {
-    this.db.run("DELETE FROM documents WHERE id = ?", [doc.id])
-    this.db.run("INSERT INTO documents (id, title, text, source) VALUES (?, ?, ?, ?)", [
-      doc.id,
-      doc.title,
-      doc.text,
-      doc.source ?? "",
-    ])
+  /**
+   * Cut first, write second: `chunk` is async, and a `bun:sqlite`
+   * transaction must not span an await, so the document's old passages are
+   * replaced in one synchronous transaction once the new ones are in hand.
+   */
+  private async indexDocument(doc: Document): Promise<void> {
+    const passages = await chunk(doc.title, doc.text)
+    this.db.transaction(() => this.writePassages(doc, passages))()
+  }
+
+  /** Replace one document's passages. Call inside a transaction. */
+  private writePassages(doc: Document, passages: Passage[]): void {
+    this.unindexDocument(doc.id)
+    const meta = this.db.prepare(
+      `INSERT INTO passage_meta (doc, ordinal, "offset", length, heading, hash) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    const fts = this.db.prepare("INSERT INTO passages (rowid, doc, ordinal, heading, text) VALUES (?, ?, ?, ?, ?)")
+    for (const p of passages) {
+      const { lastInsertRowid } = meta.run(doc.id, p.ordinal, p.offset, p.length, p.heading, p.hash)
+      fts.run(lastInsertRowid, doc.id, p.ordinal, p.heading, doc.text.slice(p.offset, p.offset + p.length))
+    }
+  }
+
+  private unindexDocument(id: string): void {
+    this.db.run("DELETE FROM passages WHERE rowid IN (SELECT rowid FROM passage_meta WHERE doc = ?)", [id])
+    this.db.run("DELETE FROM passage_meta WHERE doc = ?", [id])
   }
 
   async listDocuments(): Promise<Document[]> {
@@ -538,18 +633,63 @@ export class FileStore implements Store {
     return parseDocument(await readFile(path, "utf-8"))
   }
 
+  /** The distinct documents of a passage search, in the order they first hit. */
   async searchDocuments(query: string): Promise<Document[]> {
-    const fts = ftsQuery(query)
-    if (fts === null) return []
-    const rows = this.db
-      .query("SELECT id FROM documents WHERE documents MATCH ? ORDER BY bm25(documents)")
-      .all(fts) as { id: string }[]
-    const docs = await Promise.all(rows.map((r) => this.getDocument(r.id)))
-    return docs.filter((d): d is Document => d !== null)
+    const { docs } = await this.passageSearch(query, 50)
+    return [...docs.values()].filter((d): d is Document => d !== null)
   }
 
-  async searchPassages(_query: string, _opts?: SearchOptions): Promise<{ hits: PassageHit[]; notice?: string }> {
-    throw new Error("not implemented")
+  /**
+   * Keyword-ranked only until this store can embed: `semantic` is accepted
+   * and ignored, and no notice is given, because nothing was asked for that
+   * this store could otherwise have done.
+   */
+  async searchPassages(query: string, opts: SearchOptions = {}): Promise<{ hits: PassageHit[]; notice?: string }> {
+    const { hits } = await this.passageSearch(query, opts.limit ?? DEFAULT_PASSAGE_LIMIT)
+    return { hits }
+  }
+
+  /**
+   * The search both methods above share, handing back the documents it read
+   * so `searchDocuments` need not read them a second time. Each document is
+   * read once however many of its passages hit, and only until `limit` hits
+   * are in hand. A passage whose document file has gone is skipped: the
+   * files are the truth, and the index only a cache of them.
+   */
+  private async passageSearch(
+    query: string,
+    limit: number,
+  ): Promise<{ hits: PassageHit[]; docs: Map<string, Document | null> }> {
+    const docs = new Map<string, Document | null>()
+    const fts = ftsQuery(query)
+    if (fts === null) return { hits: [], docs }
+    const rows = this.db
+      .query(
+        `SELECT m.rowid AS rowid, m.doc AS doc, m.ordinal AS ordinal, m."offset" AS "offset", m.length AS length, ` +
+          "m.heading AS heading, m.hash AS hash FROM passages JOIN passage_meta m ON m.rowid = passages.rowid " +
+          "WHERE passages MATCH ? ORDER BY bm25(passages) LIMIT ?",
+      )
+      .all(fts, LEG_DEPTH) as PassageRow[]
+    const byId = new Map(rows.map((r) => [String(r.rowid), r]))
+    // One leg today, so fusion keeps the keyword order; it is here so the
+    // vector leg joins as a second list rather than a second code path.
+    const ranked = capPerDoc(rrf([rows.map((r) => String(r.rowid))]).map(({ id }) => byId.get(id)!))
+    const hits: PassageHit[] = []
+    for (const { rowid: _rowid, ...p } of ranked) {
+      if (hits.length >= limit) break
+      if (!docs.has(p.doc)) docs.set(p.doc, await this.getDocument(p.doc))
+      const doc = docs.get(p.doc)
+      if (!doc) continue
+      hits.push({
+        ...p,
+        title: doc.title,
+        source: doc.source,
+        text: doc.text.slice(p.offset, p.offset + p.length),
+        generated: doc.generated ?? false,
+        repo: doc.repo ?? null,
+      })
+    }
+    return { hits, docs }
   }
 
   /**
@@ -643,7 +783,7 @@ export class FileStore implements Store {
 
   private async writeDocument(doc: Document): Promise<void> {
     await writeFile(this.docPath(doc.id), serializeDocument(doc), "utf-8")
-    this.indexDocument(doc)
+    await this.indexDocument(doc)
   }
 
   /**
@@ -703,7 +843,7 @@ export class FileStore implements Store {
     // detected race can clean up after itself.
     if (!found) {
       await unlink(this.docPath(doc.id))
-      this.db.run("DELETE FROM documents WHERE id = ?", [doc.id])
+      this.db.transaction(() => this.unindexDocument(doc.id))()
       throw new Error(unknownClaimMessage(claimId))
     }
     await unlink(found.path)
@@ -733,20 +873,20 @@ export class FileStore implements Store {
    * arithmetic.
    */
   async rebuildIndex(): Promise<{ claims: number; documents: number }> {
-    this.db.run("DELETE FROM claims")
-    this.db.run("DELETE FROM documents")
-    let claims = 0
-    let documents = 0
-    for (const status of STATUSES) {
-      for (const claim of await this.list(status)) {
-        this.index(claim)
-        claims++
-      }
-    }
-    for (const doc of await this.listDocuments()) {
-      this.indexDocument(doc)
-      documents++
-    }
-    return { claims, documents }
+    // Everything read and cut first, then written in one transaction, so a
+    // search from another process never sees the index half-empty.
+    const claims: Claim[] = []
+    for (const status of STATUSES) claims.push(...(await this.list(status)))
+    const documents = await Promise.all(
+      (await this.listDocuments()).map(async (doc) => ({ doc, passages: await chunk(doc.title, doc.text) })),
+    )
+    this.db.transaction(() => {
+      this.db.run("DELETE FROM claims")
+      this.db.run("DELETE FROM passages")
+      this.db.run("DELETE FROM passage_meta")
+      for (const claim of claims) this.index(claim)
+      for (const { doc, passages } of documents) this.writePassages(doc, passages)
+    })()
+    return { claims: claims.length, documents: documents.length }
   }
 }

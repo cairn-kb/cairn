@@ -4,9 +4,15 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { EventLog } from "../src/events"
 import { FileStore } from "../src/store"
-import { CONTRACT_CASES, DOCUMENT_CONTRACT_CASES, type ContractLog, type ExpectFn } from "./store-contract"
+import {
+  CONTRACT_CASES,
+  DOCUMENT_CONTRACT_CASES,
+  PASSAGE_CONTRACT_CASES,
+  type ContractLog,
+  type ExpectFn,
+} from "./store-contract"
 
-for (const c of [...CONTRACT_CASES, ...DOCUMENT_CONTRACT_CASES]) {
+for (const c of [...CONTRACT_CASES, ...DOCUMENT_CONTRACT_CASES, ...PASSAGE_CONTRACT_CASES]) {
   test(`FileStore: ${c.name}`, async () => {
     const root = await mkdtemp(join(tmpdir(), "cairn-contract-"))
     // Constructed exactly as cli.ts's openStore() does it: propose and review
