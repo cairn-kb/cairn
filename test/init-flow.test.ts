@@ -333,6 +333,33 @@ test("a first-answer search with no hits says so, and the run still completes", 
   expect(said()).toContain("The search found nothing")
 })
 
+test("a document that cannot be imported is reported, and init still reaches its first answer", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const refusing = async (r: string): Promise<Store> => {
+    const s = await storeAt(r)
+    return new Proxy(s, {
+      get(target, prop, receiver) {
+        if (prop === "importDocument") {
+          return async (input: { source: string }) => {
+            if (input.source === "app:docs/testing.md") throw new Error("disk on fire")
+            return target.importDocument(input as never)
+          }
+        }
+        const v = Reflect.get(target, prop, receiver)
+        return typeof v === "function" ? v.bind(target) : v
+      },
+    }) as Store
+  }
+  const outcome = await runInitCommand(await deps({ openStore: refusing }))
+  expect(outcome).toBe("written")
+  expect(said()).toContain(`could not import ${join(repoRoot, "docs", "testing.md")}: disk on fire`)
+  expect(said()).toContain("imported 3 documents from app — 1 could not be imported")
+  expect(await docCount()).toBe(3)
+  expect(said()).toContain("First answer")
+  expect(said()).toContain("Restart your agent, then run `cairn doctor`")
+  expect((await readConfig(root))?.initCompletedAt).toBe("2026-10-20T10:00:00.000Z")
+})
+
 // --- prove -------------------------------------------------------------------
 
 test("a handshake that throws marks the agent ✗ with its fix, and the flow continues", async () => {

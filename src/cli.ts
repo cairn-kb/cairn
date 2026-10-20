@@ -919,8 +919,10 @@ async function firstFill(
 
   const store = await (d.openStore ?? makeStore)(d.root)
   const result = await applyFill(store, fill)
+  for (const { path, error } of result.failed) d.out(ui.warn(`could not import ${path}: ${error}`))
   if (fill.files.length > 0) {
-    d.out(ui.ok(`imported ${plural(result.titles.length, "document")} from ${fill.repo.label}`))
+    const failed = result.failed.length > 0 ? ` — ${result.failed.length} could not be imported` : ""
+    d.out(ui.ok(`imported ${plural(result.titles.length, "document")} from ${fill.repo.label}${failed}`))
   }
   for (const skill of fill.skills) d.out(ui.ok(`wrote ${skill.path}`))
   if (mode === "team" && fill.files.length < CODE_SCAN_THRESHOLD) {

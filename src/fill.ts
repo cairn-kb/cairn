@@ -94,22 +94,38 @@ export async function planFill(
   return { repo, files: [...files], skills, codeScan }
 }
 
-/** Import the plan's files, tagged with its repo, then write its skills. */
+/** A file the fill could not import, and why. */
+export interface FillFailure {
+  path: string
+  error: string
+}
+
+/**
+ * Import the fill plan's files, tagged with its repo, then write its skills.
+ * A file that cannot be read or stored is recorded in `failed` and the rest
+ * carry on: one unreadable file must not cost the person every other one,
+ * or the first answer that follows.
+ */
 export async function applyFill(
   store: Store,
   plan: FillPlan,
   onProgress?: (done: number, total: number) => void,
-): Promise<ImportSummary & { titles: string[] }> {
+): Promise<ImportSummary & { titles: string[]; failed: FillFailure[] }> {
   const t = newTally()
   const titles: string[] = []
+  const failed: FillFailure[] = []
   let done = 0
   for (const path of plan.files) {
-    const result = await importFile(store, path, importSource(plan.repo, path), plan.repo.label)
-    tally(t, path, result)
-    if (result.outcome !== "empty") titles.push(result.document.title)
+    try {
+      const result = await importFile(store, path, importSource(plan.repo, path), plan.repo.label)
+      tally(t, path, result)
+      if (result.outcome !== "empty") titles.push(result.document.title)
+    } catch (err) {
+      failed.push({ path, error: err instanceof Error ? err.message : String(err) })
+    }
     onProgress?.(++done, plan.files.length)
   }
   const summary = await finishTally(store, t)
   for (const { path, content } of plan.skills) await writeAtomic(path, content)
-  return { ...summary, titles }
+  return { ...summary, titles, failed }
 }
