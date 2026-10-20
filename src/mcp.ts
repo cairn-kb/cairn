@@ -60,6 +60,11 @@ reached in conversation is grounded in that discussion, not in any file — put 
 and cite nothing. Attaching the nearest related document to a claim like that does not ground it; it makes an \
 ungrounded claim look sourced, which is worse than leaving it bare.`
 
+/** What `generated` on a document means, said in both tools that return one. */
+export const GENERATED_NOTE =
+  "A document with generated: true was written by an agent from the code; treat it as " +
+  "inference, not a team decision."
+
 /**
  * Names the gap rather than papering over it: a claim can land with no
  * abstract written for it, and an admitted absence is worth more to a
@@ -663,7 +668,8 @@ export function createMcpServer(
         "the two differing means the document has changed since it was cited and the citation may " +
         "no longer describe what is in it. A claim that comes back as " +
         '{"kind":"retracted"} was approved and has since been withdrawn by a human — discard any ' +
-        "copy you are holding.",
+        "copy you are holding. " +
+        GENERATED_NOTE,
       inputSchema: {
         ids: z.array(z.string()),
         offset: z
@@ -692,7 +698,9 @@ export function createMcpServer(
         "claim, then every matching document — never interleaved by relevance score, so you can " +
         "always predict where one block ends and the next begins. A claim is durable knowledge a " +
         "human has reviewed and approved. A document is raw imported source material nobody has " +
-        "judged — read it the way you would read any file in the repo. A claim's cites each name a " +
+        "judged — read it the way you would read any file in the repo. " +
+        GENERATED_NOTE +
+        " A claim's cites each name a " +
         "document together with what it supports. Neither kind of hit carries " +
         "full text: a claim hit is its sentence and abstract, a document hit a short preview. " +
         "Call team_knowledge_read on the ids that look relevant. Results are bounded — the " +

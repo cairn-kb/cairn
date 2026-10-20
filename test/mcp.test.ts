@@ -13,6 +13,7 @@ import {
   CITE_DESCRIPTION,
   createMcpServer,
   createTools,
+  GENERATED_NOTE,
   MAP_DESCRIPTION,
   PROPOSE_DESCRIPTION,
   SERVER_INSTRUCTIONS,
@@ -496,6 +497,19 @@ test("every read tool is annotated read-only, so a host can run it without a pro
     expect(tool.title, `${name} has no title`).toBeTruthy()
     expect(tool.annotations?.readOnlyHint, `${name} is not marked read-only`).toBe(true)
   }
+})
+
+test("search and read tell an agent what a generated document is", async () => {
+  const store = new FileStore(root, log)
+  await store.init()
+  const client = await connected(store, log)
+  const { tools } = await client.listTools()
+  for (const name of ["team_knowledge_search", "team_knowledge_read"]) {
+    const description = tools.find((t) => t.name === name)!.description!
+    expect(description).toContain(GENERATED_NOTE)
+  }
+  expect(GENERATED_NOTE).toContain("generated: true")
+  expect(GENERATED_NOTE).toContain("inference, not a team decision")
 })
 
 test("propose is a write, and is deliberately not destructive", async () => {
