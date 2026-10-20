@@ -12,6 +12,7 @@ import {
   resolveInstructionFile,
   RULES_BLOCK,
   runInit,
+  SEARCH_GUIDANCE,
   upsertBlock,
   upsertGitignore,
   writeAtomic,
@@ -798,4 +799,48 @@ test("global scope writes the block into ~/.claude/CLAUDE.md and no import anywh
   const md = await readFile(join(home, ".claude", "CLAUDE.md"), "utf-8")
   expect(md).toContain("<!-- cairn:start -->")
   expect(importsAgentsMd(md)).toBe(false)
+})
+
+// --- what the block tells an agent ------------------------------------------
+
+/** The block an older cairn wrote, before it told agents to search. */
+const OLD_RULES_BLOCK = `At the start of a session, call team_knowledge_map to see what the team already
+knows, passing your agent name and a stable session id.
+
+When you learn something durable — a decision and why it was made, a gotcha that
+cost someone an hour, a convention the team follows — call
+team_knowledge_propose. A human reviews every proposal before other agents see
+it, so propose rarely and well.`
+
+test("the block tells an agent to search cairn before answering project questions", () => {
+  expect(RULES_BLOCK).toBe(`This project's team knowledge lives in cairn. Before answering a question about
+the project's decisions, conventions, architecture or history, call
+team_knowledge_search, and read the documents it points to with
+team_knowledge_read. Answer from what they return, and say so when they have
+nothing.
+
+At the start of a session, call team_knowledge_map to see what the team already
+knows, passing your agent name and a stable session id.
+
+When you learn something durable — a decision and why it was made, a gotcha that
+cost someone an hour, a convention the team follows — call
+team_knowledge_propose. A human reviews every proposal before other agents see
+it, so propose rarely and well.`)
+})
+
+test("the block's first paragraph is the search guidance the MCP server sends", () => {
+  expect(RULES_BLOCK.startsWith(SEARCH_GUIDANCE + "\n\n")).toBe(true)
+})
+
+test("re-running init replaces an older block with the new one, without a second copy", async () => {
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    await writeFile(join(repo, "AGENTS.md"), upsertBlock("# Ours\n", OLD_RULES_BLOCK), "utf-8")
+    await projectRun(repo)
+    const md = await readFile(join(repo, "AGENTS.md"), "utf-8")
+    expect(md).toContain("# Ours")
+    expect(md).toContain(RULES_BLOCK)
+    expect(md.match(/<!-- cairn:start -->/g)).toHaveLength(1)
+    expect(md.match(/team_knowledge_map/g)).toHaveLength(1)
+  })
 })

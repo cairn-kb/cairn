@@ -12,8 +12,22 @@ export type Scope = "global" | "project"
 const START = "<!-- cairn:start -->"
 const END = "<!-- cairn:end -->"
 
+/**
+ * When to look in cairn at all. Without it the block only said what to do at
+ * the start and the end of a session, and an agent answered project questions
+ * from memory with the tools sitting unused. The MCP server sends the same
+ * words as its instructions (src/mcp.ts), so the two cannot drift apart.
+ */
+export const SEARCH_GUIDANCE = `This project's team knowledge lives in cairn. Before answering a question about
+the project's decisions, conventions, architecture or history, call
+team_knowledge_search, and read the documents it points to with
+team_knowledge_read. Answer from what they return, and say so when they have
+nothing.`
+
 /** What an agent is told to do. This is prompt surface, not documentation. */
-export const RULES_BLOCK = `At the start of a session, call team_knowledge_map to see what the team already
+export const RULES_BLOCK = `${SEARCH_GUIDANCE}
+
+At the start of a session, call team_knowledge_map to see what the team already
 knows, passing your agent name and a stable session id.
 
 When you learn something durable — a decision and why it was made, a gotcha that

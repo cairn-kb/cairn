@@ -7,6 +7,7 @@ import type { EventInput, EventSink } from "./events"
 import type { CiteInput, Claim, ImportOutcome, Status, Store } from "@cairn-kb/protocol/types"
 import type { Mode } from "./config"
 import { VERSION } from "./version"
+import { SEARCH_GUIDANCE } from "./init"
 
 /** The precision bar lives here: tunable without a code change. */
 export const PROPOSE_DESCRIPTION = `Propose a piece of durable team knowledge for human review.
@@ -90,8 +91,14 @@ does not tell you what the claim covers. Read the claim in full before relying o
  *
  * It also means a user no longer has to paste this rule into their own
  * CLAUDE.md by hand for the counter to work.
+ *
+ * It opens with the search guidance from the instructions block `cairn init`
+ * writes, word for word, so a host that never reads that block is still told
+ * when to search.
  */
 export const SERVER_INSTRUCTIONS =
+  SEARCH_GUIDANCE +
+  "\n\n" +
   "Call team_knowledge_map at the start of a session to see what the team already knows, " +
   "passing your agent name and a stable session id."
 
@@ -695,7 +702,10 @@ export function createMcpServer(
       title: "Search team knowledge",
       description:
         "Search claims and documents by text when you have a specific question map's abstracts " +
-        "didn't already answer. Results come back as two blocks in a fixed order — every matching " +
+        "didn't already answer. Use it before answering any question about the project's " +
+        "decisions, conventions, architecture or history, before relying on memory or guessing, " +
+        "and before proposing a claim, so the proposal doesn't duplicate one. Results come back " +
+        "as two blocks in a fixed order — every matching " +
         "claim, then every matching document — never interleaved by relevance score, so you can " +
         "always predict where one block ends and the next begins. A claim is durable knowledge a " +
         "human has reviewed and approved. A document is raw imported source material nobody has " +

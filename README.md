@@ -126,7 +126,8 @@ That is the setup. On a fresh root, `init` asks whether to configure this
 project or your whole machine and finds which agents you have installed. It
 shows what it will write: their MCP config, with the correct absolute path
 resolved from itself, and the instructions block that tells an agent to
-consult knowledge at session start. Then it asks where knowledge should live —
+search team knowledge before answering questions about the project and to
+consult it at session start. Then it asks where knowledge should live —
 local or team, see below.
 
 In a terminal, `init` keeps going once the files are written. It starts each
@@ -214,7 +215,7 @@ absolute path:
 | Tool | What it does |
 |---|---|
 | `team_knowledge_map` | the approved claims, by abstract — called at session start |
-| `team_knowledge_search` | search approved claims and imported documents |
+| `team_knowledge_search` | search approved claims and imported documents — before answering a question about the project |
 | `team_knowledge_read` | read claims or documents in full |
 | `team_knowledge_propose` | propose a claim, optionally citing documents; it waits for review |
 | `team_knowledge_cite` | attach a document to an existing claim as evidence |
