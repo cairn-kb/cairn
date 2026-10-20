@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-10-20
+
 ### Added
 
 - cairn's MCP server now sends the same guidance as server instructions when
