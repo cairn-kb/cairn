@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- cairn's MCP server now sends the same guidance as server instructions when
+  an agent connects, and the search tool's description says when to use it.
+
+### Changed
+
+- The instructions `cairn init` writes now tell your agent to search cairn,
+  and read what it finds, before answering questions about the project's
+  decisions, conventions, architecture or history. Re-run `cairn init` in a
+  project to update instructions written by an older version.
+
 ### Fixed
 
 - `cairn init` now makes Claude Code read the instructions when they go into

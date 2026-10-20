@@ -23,6 +23,7 @@ import {
 import { FileStore } from "../src/store"
 import type { Claim, CiteInput } from "@cairn-kb/protocol/types"
 import { VERSION } from "../src/version"
+import { SEARCH_GUIDANCE } from "../src/init"
 
 /** A `propose` argument bundle with every required field filled, for tests
  *  that only care about one field varying (here, `cites`). */
@@ -550,6 +551,31 @@ test("the map-first rule reaches the host as instructions, not as a tool descrip
   // description that tells the model how to behave, and this one used to open
   // with "Call this first, at the start of a session".
   expect(MAP_DESCRIPTION).not.toContain("Call this first")
+})
+
+test("the server instructions tell an agent to search before answering, in the block's words", async () => {
+  const store = new FileStore(root, log)
+  await store.init()
+  const client = await connected(store, log)
+  // One string for both, so what `cairn init` writes and what the server
+  // sends cannot drift apart.
+  expect(client.getInstructions()).toContain(SEARCH_GUIDANCE)
+  expect(SEARCH_GUIDANCE).toContain("team_knowledge_search")
+  expect(SEARCH_GUIDANCE).toContain("decisions, conventions, architecture or history")
+})
+
+test("the search description says when to search", async () => {
+  const store = new FileStore(root, log)
+  await store.init()
+  const client = await connected(store, log)
+  const { tools } = await client.listTools()
+  const description = tools.find((t) => t.name === "team_knowledge_search")!.description!
+  expect(description).toContain("before answering any question about the project's decisions, conventions, architecture or history")
+  expect(description).toContain("before relying on memory or guessing")
+  expect(description).toContain("duplicate")
+  // What it already said stays.
+  expect(description).toContain("two blocks in a fixed order")
+  expect(description).toContain(GENERATED_NOTE)
 })
 
 test("the map description tells an agent what a missing abstract means", () => {
