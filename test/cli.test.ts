@@ -12,6 +12,7 @@ import OpenAI from "openai"
 import Anthropic from "@anthropic-ai/sdk"
 import type { InitCommandDeps } from "../src/cli"
 import type { CheckResult } from "../src/doctor"
+import { EXPECTED_TOOLS } from "../src/doctor"
 import { previewOf } from "../src/documents"
 import { serializeDocument } from "../src/documents"
 import { parseClaim, serializeClaim } from "../src/claims"
@@ -1495,6 +1496,9 @@ async function initDeps(over: Partial<InitCommandDeps> = {}): Promise<InitComman
     resolveMigration: async () => false,
     resolveTelemetry: async () => false,
     out: () => {},
+    // A stand-in for a passing handshake, so an interactive run's proof step
+    // never spawns a real process.
+    handshake: async () => [...EXPECTED_TOOLS],
     ...over,
   }
 }
