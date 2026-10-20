@@ -32,7 +32,8 @@ import { newConfig, readConfig, writeConfig } from "./config"
 import { listMembers } from "./orgs"
 import { provenanceOf, renderProvenance } from "@cairn-kb/protocol/provenance"
 import type { AuthConfig, Mode } from "./config"
-import { sendTelemetry } from "./telemetry"
+import { consentPreview, sendTelemetry } from "./telemetry"
+import { recordSearchHit } from "./first-answer-metric"
 import { VERSION, versionLine } from "./version"
 
 const ROOT = process.env.CAIRN_ROOT ?? join(process.env.HOME ?? ".", ".cairn")
@@ -276,17 +277,7 @@ async function askMigration(clack: Clack | null, held: LocalHoldings): Promise<b
  * opt-in is only meaningful if the bytes are visible. Null means cancelled.
  */
 async function askTelemetry(clack: Clack): Promise<boolean | null> {
-  const preview = newConfig(true, "a3f00000-0000-0000-0000-000000000000")
-  clack.note(
-    JSON.stringify({
-      install: preview.installId.slice(0, 3) + "…",
-      version: VERSION,
-      platform: `${process.platform}-${process.arch}`,
-      proposed: 0, approved: 0, rejected: 0, reads: 0, sessions: 0,
-      pendingAgeDays: null, generatedAbstracts: 0,
-    }) + "\nNo claim text, no repo names, no paths.",
-    "Exactly what would be sent",
-  )
+  clack.note(consentPreview(), "Exactly what would be sent")
   const answer = await clack.confirm({
     message: "Send anonymous usage counts to help improve cairn?",
     initialValue: false,
@@ -1995,7 +1986,10 @@ export async function main(argv: string[]): Promise<void> {
     }
     case "mcp": {
       const mode = (await readConfig(ROOT))?.mode
-      const server = createMcpServer(await openStore(), await openSink(), { mode })
+      const server = createMcpServer(await openStore(), await openSink(), {
+        mode,
+        onSearchResult: (hits) => recordSearchHit(ROOT, hits),
+      })
       await server.connect(new StdioServerTransport())
       break
     }

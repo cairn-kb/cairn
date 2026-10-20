@@ -63,6 +63,22 @@ export interface CairnConfig {
    * to be missing is a fallback removed on purpose, wearing a different hat.
    */
   mode: Mode
+  /**
+   * ISO timestamp of when `cairn init` finished writing this root, or null
+   * until it has. Set once, by `init` itself — see `runInitCommand` — and the
+   * baseline the first-answer metric measures from.
+   */
+  initCompletedAt: string | null
+  /**
+   * ISO timestamp of the first MCP search with at least one hit, from an
+   * agent session — never `init`'s own demonstration search, which never
+   * reaches the server handler that records this. Set once; later hits leave
+   * it alone.
+   */
+  firstAnswerAt: string | null
+  /** Set once the first-answer bucket has gone out on a ping, so it is sent
+   *  at most once. */
+  firstAnswerReported: boolean
 }
 
 const file = (root: string) => join(root, "config.json")
@@ -72,7 +88,10 @@ export function newConfig(telemetry: boolean, uuid: string = crypto.randomUUID()
   // before local mode existed. A caller choosing local says so — `{ ...newConfig(t),
   // mode: "local" }` — which is the same spread the auth and generation call
   // sites already use.
-  return { installId: uuid, telemetry, lastSentAt: null, generation: null, auth: null, mode: "team" }
+  return {
+    installId: uuid, telemetry, lastSentAt: null, generation: null, auth: null, mode: "team",
+    initCompletedAt: null, firstAnswerAt: null, firstAnswerReported: false,
+  }
 }
 
 /** Null when absent or unparseable — a corrupt config is a thing to report, not to die on. */
@@ -131,6 +150,13 @@ export async function readConfig(root: string): Promise<CairnConfig | null> {
       // field is hosted-only, so the default has to be the status quo — a
       // missing field must not silently relocate anyone's knowledge.
       mode: raw.mode === "local" ? "local" : "team",
+      // Same rule as every other optional field here: a value that is not
+      // the recognisable shape is dropped rather than trusted, and every
+      // install predating this metric reads as "not measured yet" instead of
+      // throwing a type error at the first read.
+      initCompletedAt: typeof raw.initCompletedAt === "string" ? raw.initCompletedAt : null,
+      firstAnswerAt: typeof raw.firstAnswerAt === "string" ? raw.firstAnswerAt : null,
+      firstAnswerReported: raw.firstAnswerReported === true,
     }
   } catch {
     return null
