@@ -6,6 +6,7 @@ import {
   cairnServerEntry,
   detectAgents,
   mergeMcpConfig,
+  planInit,
   resolveInstructionFile,
   RULES_BLOCK,
   runInit,
@@ -13,6 +14,7 @@ import {
   upsertGitignore,
   writeAtomic,
 } from "../src/init"
+import { readCodexEntry } from "../src/codex-config"
 
 let home: string
 
@@ -462,4 +464,106 @@ test("a failed replacement leaves the original alone and cleans up after itself"
   await expect(writeAtomic(target, "nope")).rejects.toThrow()
   expect((await stat(target)).isDirectory()).toBe(true)
   expect((await readdir(home)).filter((f) => f.includes("tmp"))).toEqual([])
+})
+
+// --- Codex and Claude Desktop ---------------------------------------------
+
+function opts(cwd: string, scope: "global" | "project") {
+  return {
+    home, cwd, cliPath: "/abs/cli.ts", scope, dryRun: true,
+    bunPath: "/opt/homebrew/bin/bun", execPath: "/opt/homebrew/bin/bun",
+    cairnRoot: "/tmp/cairn-root", platform: "linux" as const,
+  }
+}
+
+const desktopCfg = () => join(home, ".config", "Claude", "claude_desktop_config.json")
+
+test("project scope with Codex plans ~/.codex/config.toml, not a project file", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  await mkdir(join(home, ".codex"))
+  try {
+    const plan = await planInit(opts(repo, "project"))
+    const cfg = plan.changes.find((c) => c.path === join(home, ".codex", "config.toml"))
+    expect(cfg).toBeDefined()
+    expect(readCodexEntry(cfg!.content)?.env?.CAIRN_ROOT).toBe("/tmp/cairn-root")
+    expect(plan.changes.some((c) => c.path.startsWith(repo) && c.path.endsWith(".toml"))).toBe(false)
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
+test("global scope with Codex plans its config and its global AGENTS.md", async () => {
+  await mkdir(join(home, ".codex"))
+  const plan = await planInit(opts(home, "global"))
+  const paths = plan.changes.map((c) => c.path)
+  expect(paths).toContain(join(home, ".codex", "config.toml"))
+  const agentsMd = plan.changes.find((c) => c.path === join(home, ".codex", "AGENTS.md"))
+  expect(agentsMd?.content).toContain("team_knowledge_map")
+})
+
+test("Codex at project scope gets the rules in ~/.codex/AGENTS.md when the project uses CLAUDE.md", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  await mkdir(join(home, ".codex"))
+  await writeFile(join(repo, "CLAUDE.md"), "# mine\n", "utf-8")
+  try {
+    const plan = await planInit(opts(repo, "project"))
+    const paths = plan.changes.map((c) => c.path)
+    expect(paths).toContain(join(repo, "CLAUDE.md"))
+    expect(paths).toContain(join(home, ".codex", "AGENTS.md"))
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
+test("Codex at project scope does not touch ~/.codex/AGENTS.md when the project uses AGENTS.md", async () => {
+  // Codex already reads the project's AGENTS.md; a second copy means reading it twice.
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  await mkdir(join(home, ".codex"))
+  try {
+    const plan = await planInit(opts(repo, "project"))
+    const paths = plan.changes.map((c) => c.path)
+    expect(paths).toContain(join(repo, "AGENTS.md"))
+    expect(paths).not.toContain(join(home, ".codex", "AGENTS.md"))
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
+test("an invalid Codex config aborts the whole run with nothing written", async () => {
+  await mkdir(join(home, ".claude"))
+  await mkdir(join(home, ".codex"))
+  await writeFile(join(home, ".codex", "config.toml"), "[mcp_servers.other]\ncommand = \n", "utf-8")
+  await expect(runInit({ ...opts(home, "global"), dryRun: false })).rejects.toThrow(
+    "could not parse existing Codex config as TOML",
+  )
+  expect(await readFile(join(home, ".codex", "config.toml"), "utf-8")).toBe("[mcp_servers.other]\ncommand = \n")
+  expect(await Bun.file(join(home, ".claude.json")).exists()).toBe(false)
+  expect(await Bun.file(join(home, ".claude", "CLAUDE.md")).exists()).toBe(false)
+})
+
+for (const scope of ["global", "project"] as const) {
+  test(`Claude Desktop at ${scope} scope plans its config, the paste step and the restart`, async () => {
+    const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+    await mkdir(join(home, ".config", "Claude"), { recursive: true })
+    await writeFile(desktopCfg(), JSON.stringify({ mcpServers: { other: { command: "x" } } }), "utf-8")
+    try {
+      const plan = await planInit(opts(repo, scope))
+      const cfg = plan.changes.find((c) => c.path === desktopCfg())
+      expect(cfg).toBeDefined()
+      const parsed = JSON.parse(cfg!.content)
+      expect(parsed.mcpServers.other).toEqual({ command: "x" })
+      expect(parsed.mcpServers.cairn.env.CAIRN_ROOT).toBe("/tmp/cairn-root")
+      expect(plan.printOnly.join(" ")).toMatch(/Claude Desktop.*Claude project/)
+      expect(plan.nextSteps.join(" ")).toMatch(/[Qq]uit Claude Desktop completely.*reopen/)
+    } finally {
+      await rm(repo, { recursive: true, force: true })
+    }
+  })
+}
+
+test("a malformed Claude Desktop config aborts without writing", async () => {
+  await mkdir(join(home, ".config", "Claude"), { recursive: true })
+  await writeFile(desktopCfg(), "{ broken", "utf-8")
+  await expect(runInit({ ...opts(home, "global"), dryRun: false })).rejects.toThrow("could not parse")
+  expect(await readFile(desktopCfg(), "utf-8")).toBe("{ broken")
 })

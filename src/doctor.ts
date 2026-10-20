@@ -177,7 +177,7 @@ export async function checkBinary(deps: DoctorDeps): Promise<CheckResult> {
  * sends the reader in a circle. Named once, so the two checks that can land in this state say
  * the same thing.
  */
-const NO_AGENT_FIX = "install Claude Code or Cursor, or cairn init --project"
+const NO_AGENT_FIX = "install Claude Code, Cursor, Codex or Claude Desktop, or cairn init --project"
 
 export async function checkConfig(deps: DoctorDeps): Promise<CheckResult> {
   const found = await findMcpConfig(deps)
@@ -185,7 +185,7 @@ export async function checkConfig(deps: DoctorDeps): Promise<CheckResult> {
     if ((await detectAgents(deps.home)).length === 0) {
       return {
         name: "config", group: "Agent config", status: "fail",
-        detail: `no supported agent found — looked for ~/.claude and ~/.cursor in ${deps.home}`,
+        detail: `no supported agent found — looked for ~/.claude, ~/.cursor, ~/.codex and Claude Desktop in ${deps.home}`,
         fix: NO_AGENT_FIX,
       }
     }

@@ -52,7 +52,9 @@ test("a missing MCP config on a machine with no agent names the real problem", a
   const r = await checkConfig(deps())
   expect(r.status).toBe("fail")
   expect(r.detail).toContain("no supported agent")
+  expect(r.detail).toContain("~/.claude, ~/.cursor, ~/.codex and Claude Desktop")
   expect(r.fix).toContain("--project")
+  expect(r.fix).toContain("Claude Code, Cursor, Codex or Claude Desktop")
 })
 
 test("a config whose command does not exist fails", async () => {

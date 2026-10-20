@@ -33,8 +33,8 @@ pins a release tag (for example `CAIRN_VERSION=v1.2.3`, any tag on the
 releases page), and `CAIRN_INSTALL_DIR` picks where the binary goes
 (`~/.local/bin` by default).
 
-`cairn init --local` needs no account. With no Claude Code or Cursor
-installed, add `--project` to write `.mcp.json` anyway. `cairn init --team`
+`cairn init --local` needs no account. With no Claude Code, Cursor, Codex
+or Claude Desktop installed, add `--project` to write `.mcp.json` anyway. `cairn init --team`
 (or choosing the shared team space at the prompt) needs an account first —
 the hosted tier is an invite-only beta, see [Free and hosted](#free-and-hosted):
 
@@ -143,6 +143,8 @@ local, and a local root holding anything goes through the migration below.
 |---|---|---|
 | Claude Code | `.mcp.json` | `~/.claude.json` |
 | Cursor | `.cursor/mcp.json` + `.cursor/rules/cairn.mdc` | `~/.cursor/mcp.json`, rules printed |
+| Codex | `~/.codex/config.toml` | `~/.codex/config.toml` + `~/.codex/AGENTS.md` |
+| Claude Desktop | its `claude_desktop_config.json`, rules printed | the same |
 | Instructions | `AGENTS.md`, or your existing `CLAUDE.md` | `~/.claude/CLAUDE.md` |
 
 **Instructions go in one file, never two.** An existing `AGENTS.md` wins, an
@@ -157,6 +159,12 @@ teammates a broken config, which is worse than no config: each person runs
 Cursor's *user-level* rules live in its settings rather than a file, so global
 scope prints that block for you to paste. Project-level Cursor rules are a real
 file and get written.
+
+Codex and Claude Desktop each keep one config for every project, so `init`
+writes theirs at either scope. Codex reads a project's `AGENTS.md` itself; when
+the project uses `CLAUDE.md` instead, the rules also go in `~/.codex/AGENTS.md`.
+Claude Desktop has no instructions file — paste the printed block into a Claude
+project — and only loads a new server after you quit it completely and reopen it.
 
 `init` never clobbers. Existing MCP servers are preserved, the instructions sit
 between `<!-- cairn:start -->` sentinels so re-running updates in place, and a
