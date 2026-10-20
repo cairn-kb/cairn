@@ -919,3 +919,19 @@ test("a CLAUDE.md that already imports AGENTS.md still loses a stale block", asy
     expect(claude.match(/@AGENTS\.md/g)).toHaveLength(1)
   })
 })
+
+test("a CLAUDE.md that is a broken link is named as broken, not as a file to edit", async () => {
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    await writeFile(join(repo, "AGENTS.md"), "# Ours\n", "utf-8")
+    await symlink("gone.md", join(repo, "CLAUDE.md"))
+    const r = await projectRun(repo)
+    expect(r.written).not.toContain(join(repo, "CLAUDE.md"))
+    expect((await lstat(join(repo, "CLAUDE.md"))).isSymbolicLink()).toBe(true)
+    expect(await Bun.file(join(repo, "gone.md")).exists()).toBe(false)
+    const step = r.nextSteps.find((s) => s.includes(join(repo, "CLAUDE.md")))!
+    expect(step).toContain(`is a broken link to ${join(repo, "gone.md")}`)
+    expect(step).toContain("fix it, then add @AGENTS.md")
+    expect(step).not.toContain("Add a line reading")
+  })
+})

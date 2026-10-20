@@ -444,8 +444,11 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
       const linked = await sameFile(claudeMd, instructions)
       if (!linked && link !== null && !importsAgentsMd(text)) {
         nextSteps.push(
-          `${claudeMd} is a symlink to ${link}, so cairn left it alone. Add a line reading ` +
-            `${AGENTS_IMPORT} to ${link} so Claude Code reads ${instructions}.`,
+          (await exists(claudeMd))
+            ? `${claudeMd} is a symlink to ${link}, so cairn left it alone. Add a line reading ` +
+                `${AGENTS_IMPORT} to ${link} so Claude Code reads ${instructions}.`
+            : `${claudeMd} is a broken link to ${link}; fix it, then add ${AGENTS_IMPORT} ` +
+                `so Claude Code reads ${instructions}.`,
         )
       }
       if (!linked && link === null) {
