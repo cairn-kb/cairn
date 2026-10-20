@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-## [0.8.0] — 2026-10-20
-
 ### Added
 
 - `cairn init` now looks for Codex and Claude Desktop as well as Claude Code
@@ -16,8 +14,6 @@
   `--yes` or scripted project-scope run leaves them alone and says so in one
   line. If either config uses syntax cairn can't safely edit, that agent is
   skipped and `init` prints the entry to add by hand.
-- `cairn search` now shows the top results on the terminal, with a count of
-  how many more matched — pass `--json` to see all of them.
 - Documents can be marked as machine-generated and tagged with the repository
   they came from; `cairn init --team` keeps both when moving documents.
 - Agents can write overview documents into a local space with the new
@@ -53,6 +49,17 @@
 - `cairn doctor` now finds cairn in Codex's and Claude Desktop's config, and
   finds a project's `.mcp.json` or `.cursor/mcp.json` at the top of the git
   repository when you run it from a subfolder.
+
+
+## [0.8.0] — 2026-10-20
+
+### Added
+
+- `cairn search` now shows the top results on the terminal, with a count of
+  how many more matched — pass `--json` to see all of them.
+
+### Fixed
+
 - `cairn search` and an agent's search now find documents and claims for a
   question in plain words, ranked by relevance, instead of only an exact
   phrase.
