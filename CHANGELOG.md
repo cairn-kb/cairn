@@ -10,6 +10,9 @@
   how many more matched — pass `--json` to see all of them.
 - Documents can be marked as machine-generated and tagged with the repository
   they came from; `cairn init --team` keeps both when moving documents.
+- Agents can write overview documents into a local space with the new
+  `team_knowledge_write_document` MCP tool; they are labelled generated in
+  search, reads and `cairn show`.
 
 ### Fixed
 

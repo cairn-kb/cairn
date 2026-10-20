@@ -182,8 +182,12 @@ absolute path:
 | `team_knowledge_read` | read claims or documents in full |
 | `team_knowledge_propose` | propose a claim, optionally citing documents; it waits for review |
 | `team_knowledge_cite` | attach a document to an existing claim as evidence |
+| `team_knowledge_write_document` | write a generated overview document into a local space |
 
 There is no tool to review, retract or uncite: those are a person's.
+`team_knowledge_write_document` is refused in team mode — writing a
+generated document into a space backed by the hosted service isn't
+supported yet; import it yourself in the console instead.
 
 ## Filling in the missing abstracts
 

@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs"
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
-import { COMMAND_FLAGS, formatCitedUpdates, formatFailures, formatStatus, gateGeneration, main, makeSink, makeStore, modeFromFlags, modelFlags, runBackfill, runImport, runInitCommand, telemetryChoice, unknownFlags, runSearch, runRetract, runCite, runUncite, formatSearch, formatClaim, initPrompts } from "../src/cli"
+import { COMMAND_FLAGS, formatCitedUpdates, formatDocument, formatDocumentHits, formatFailures, formatStatus, gateGeneration, main, makeSink, makeStore, modeFromFlags, modelFlags, runBackfill, runImport, runInitCommand, telemetryChoice, unknownFlags, runSearch, runRetract, runCite, runUncite, formatSearch, formatClaim, initPrompts } from "../src/cli"
 import type { GenerationGateDeps, LocalHoldings } from "../src/cli"
 import type { ResolvedGeneration } from "../src/generate"
 import { resolveBaseUrl } from "../src/providers"
@@ -4133,3 +4133,41 @@ test(
   },
   20000,
 )
+
+// --- generated documents, shown to a person ---------------------------------
+
+test("formatDocument shows generated and the repo label for a generated document", () => {
+  const doc: Document = {
+    id: "doc-1", title: "App architecture", text: "body", source: "generated:app/architecture",
+    created: "", updated: "", hash: "h", generated: true, repo: "app",
+  }
+  const out = formatDocument(doc)
+  expect(out).toContain("generated")
+  expect(out).toContain("app")
+})
+
+test("formatDocument says nothing about generated for ordinary imported material", () => {
+  const doc: Document = {
+    id: "doc-1", title: "Notes", text: "body", source: "notes.md",
+    created: "", updated: "", hash: "h",
+  }
+  expect(formatDocument(doc)).not.toContain("generated")
+})
+
+test("formatDocumentHits marks a generated document next to its title, and leaves an imported one alone", () => {
+  const generated: Document = {
+    id: "doc-1", title: "App architecture", text: "body", source: "generated:app/architecture",
+    created: "", updated: "", hash: "h", generated: true, repo: "app",
+  }
+  const imported: Document = {
+    id: "doc-2", title: "Notes", text: "body", source: "notes.md",
+    created: "", updated: "", hash: "h",
+  }
+  const out = formatDocumentHits([generated, imported])
+  const lines = out.split("\n")
+  const genLine = lines.find((l) => l.includes("App architecture"))!
+  expect(genLine).toContain("generated")
+  expect(genLine).toContain("app")
+  const impLine = lines.find((l) => l.includes("Notes"))!
+  expect(impLine).not.toContain("generated")
+})

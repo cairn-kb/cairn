@@ -4,7 +4,8 @@ import { findOverlaps } from "./claims"
 import { previewOf, windowOf } from "./documents"
 import { EMPTY_SUPPORTS, unknownDocumentMessage } from "@cairn-kb/protocol/event-kinds"
 import type { EventInput, EventSink } from "./events"
-import type { CiteInput, Claim, Status, Store } from "@cairn-kb/protocol/types"
+import type { CiteInput, Claim, ImportOutcome, Status, Store } from "@cairn-kb/protocol/types"
+import type { Mode } from "./config"
 import { VERSION } from "./version"
 
 /** The precision bar lives here: tunable without a code change. */
@@ -89,6 +90,32 @@ export const SERVER_INSTRUCTIONS =
   "Call team_knowledge_map at the start of a session to see what the team already knows, " +
   "passing your agent name and a stable session id."
 
+/**
+ * What an agent needs to know before writing an overview nobody asked it to
+ * cite. The text it writes will be shown to people exactly as given — this is
+ * not a draft a human edits before it is visible — and `repo` is the label
+ * the person who asked it to run gave it, not a guess: using the wrong one
+ * mislabels the document for everyone who reads it afterwards.
+ */
+export const WRITE_DOCUMENT_DESCRIPTION = `Write an overview document into the local space, labelled generated so people \
+can tell a machine wrote it. The text is shown to people exactly as you write it — there is no draft stage.
+
+\`repo\` is the repository label you were given for this work, not one you invent. \`slug\` names the document within \
+that repo and must be lowercase letters, digits and hyphens only, such as "architecture" — it becomes part of the \
+document's identity, so it cannot contain "/" or "..". Calling this again with the same repo and slug replaces that \
+document's text in place rather than creating a second one, which is how you keep an overview current as the repo \
+changes.`
+
+/**
+ * What an agent is told when it tries to write a generated document against a
+ * space that talks to the hosted service. Points at the one path that works
+ * today — importing by hand in the console — rather than leaving the agent to
+ * guess whether this is a bug or a missing feature.
+ */
+export const TEAM_WRITE_REFUSAL =
+  "team_knowledge_write_document: agents cannot write documents to a team space yet. " +
+  "Import this text as a document yourself in the console instead."
+
 export interface ProposeInput {
   claim: string
   body: string
@@ -136,7 +163,17 @@ export type SearchHit =
       tags: string[]
       status: Status
     }
-  | { kind: "document"; id: string; title: string; source: string | null; preview: string }
+  | {
+      kind: "document"
+      id: string
+      title: string
+      source: string | null
+      preview: string
+      /** A machine wrote this document; never a team decision. */
+      generated: boolean
+      /** The repository label the document came from, or null when it has none. */
+      repo: string | null
+    }
 
 /** How many hits of EACH kind a search returns when the caller names no limit. */
 export const DEFAULT_SEARCH_LIMIT = 10
@@ -185,6 +222,10 @@ export interface ReadDocument {
    * nothing to compare it with.
    */
   hash: string
+  /** A machine wrote this document; never a team decision. */
+  generated: boolean
+  /** The repository label the document came from, or null when it has none. */
+  repo: string | null
   text: string
   offset: number
   length: number
@@ -233,6 +274,38 @@ export interface KbTools {
     id: string
     cites: number
   }>
+  /**
+   * Writes a generated overview document into the local space, under the
+   * synthetic source `generated:${repo}/${slug}` — the same source-matching
+   * `Store.importDocument` already does for `cairn import` means calling this
+   * again with the same repo and slug replaces the document in place rather
+   * than creating a second copy. Team mode is refused by the MCP server
+   * handler, not here — this function has no notion of mode.
+   */
+  kbWriteDocument(input: {
+    repo: string
+    slug: string
+    title: string
+    text: string
+    agent: string
+  }): Promise<{ id: string; outcome: ImportOutcome }>
+}
+
+/**
+ * `slug` and `repo` both end up as path-like segments inside
+ * `generated:${repo}/${slug}`, so both are held to the same shape: lowercase
+ * letters, digits and hyphens. That is enough on its own to rule out "/" and
+ * "..", without a second, separate traversal check that could drift from it.
+ */
+const SEGMENT_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
+
+function assertSegment(field: "repo" | "slug", value: string): void {
+  if (!SEGMENT_PATTERN.test(value)) {
+    throw new Error(
+      `team_knowledge_write_document: ${field} must be lowercase letters, digits and hyphens only ` +
+        `(no "/", ".." or uppercase) — got "${value}".`,
+    )
+  }
 }
 
 export function createTools(store: Store, log: EventSink): KbTools {
@@ -307,6 +380,8 @@ export function createTools(store: Store, log: EventSink): KbTools {
               title: doc.title,
               source: doc.source,
               hash: doc.hash,
+              generated: doc.generated ?? false,
+              repo: doc.repo ?? null,
               ...win,
             })
             continue
@@ -372,6 +447,8 @@ export function createTools(store: Store, log: EventSink): KbTools {
         title: doc.title,
         source: doc.source,
         preview: previewOf(doc),
+        generated: doc.generated ?? false,
+        repo: doc.repo ?? null,
       }))
       const omitted = claims.length - claimHits.length + (docResults.length - docHits.length)
       return {
@@ -455,6 +532,35 @@ export function createTools(store: Store, log: EventSink): KbTools {
       // much as a read.
       return { id: claim.id, cites: claim.cites.length }
     },
+
+    async kbWriteDocument(input: {
+      repo: string
+      slug: string
+      title: string
+      text: string
+      agent: string
+    }) {
+      assertSegment("repo", input.repo)
+      assertSegment("slug", input.slug)
+      if (input.title.trim() === "") {
+        throw new Error("team_knowledge_write_document: title must not be empty.")
+      }
+      if (input.text.trim() === "") {
+        throw new Error("team_knowledge_write_document: text must not be empty.")
+      }
+      const { document, outcome } = await store.importDocument({
+        title: input.title,
+        text: input.text,
+        // The source `cairn import` could never produce — see the doc
+        // comment on `KbTools.kbWriteDocument` for why that is what makes a
+        // second write with the same repo and slug replace this document
+        // rather than create a sibling.
+        source: `generated:${input.repo}/${input.slug}`,
+        generated: true,
+        repo: input.repo,
+      })
+      return { id: document.id, outcome }
+    },
   }
 }
 
@@ -482,7 +588,12 @@ export function createTools(store: Store, log: EventSink): KbTools {
  */
 const READ_ONLY = { readOnlyHint: true } as const
 
-export function createMcpServer(store: Store, log: EventSink): McpServer {
+export function createMcpServer(
+  store: Store,
+  log: EventSink,
+  opts: { mode?: Mode; onSearchResult?: (hits: number) => Promise<void> } = {},
+): McpServer {
+  const mode: Mode = opts.mode ?? "local"
   const server = new McpServer(
     { name: "cairn", version: VERSION },
     { instructions: SERVER_INSTRUCTIONS },
@@ -576,9 +687,14 @@ export function createMcpServer(store: Store, log: EventSink): McpServer {
       },
       annotations: READ_ONLY,
     },
-    async ({ query, limit }) => ({
-      content: [{ type: "text", text: JSON.stringify(await tools.kbSearch(query, limit)) }],
-    }),
+    async ({ query, limit }) => {
+      const result = await tools.kbSearch(query, limit)
+      // Only here, never inside `createTools(...).kbSearch` itself — that
+      // function is also called directly by tests and by any future
+      // in-process caller that should not have to carry this along.
+      await opts.onSearchResult?.(result.hits.length)
+      return { content: [{ type: "text", text: JSON.stringify(result) }] }
+    },
   )
 
   server.registerTool(
@@ -638,6 +754,40 @@ export function createMcpServer(store: Store, log: EventSink): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     },
     async (input) => ({ content: [{ type: "text", text: JSON.stringify(await tools.kbCite(input)) }] }),
+  )
+
+  server.registerTool(
+    "team_knowledge_write_document",
+    {
+      title: "Write a generated document",
+      description: WRITE_DOCUMENT_DESCRIPTION,
+      inputSchema: {
+        repo: z.string().describe("The repository label you were given for this work, not one you invent"),
+        slug: z
+          .string()
+          .describe(
+            "Names this document within the repo, lowercase letters, digits and hyphens only " +
+              '(e.g. "architecture") — it becomes part of the document\'s identity, so it cannot ' +
+              'contain "/" or "..".',
+          ),
+        title: z.string().describe("The document's title, shown to people exactly as given"),
+        text: z.string().describe("The document's full text, shown to people exactly as given"),
+        agent: z.string().describe("Which agent is calling, e.g. cursor"),
+      },
+      // Writing again with the same repo and slug replaces the document's
+      // text rather than creating a second one — idempotent in effect, but
+      // not marked so: the response differs ("created" vs. "updated") in a
+      // way a host should not assume away. Not destructive: it replaces this
+      // one generated document's own text and removes nothing else.
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async (input) => {
+      // Mode decides this before the input is even looked at: a space
+      // talking to the hosted service has no path yet for an agent to write
+      // a document into it, so nothing here should get far enough to try.
+      if (mode === "team") throw new Error(TEAM_WRITE_REFUSAL)
+      return { content: [{ type: "text", text: JSON.stringify(await tools.kbWriteDocument(input)) }] }
+    },
   )
 
   // No `team_knowledge_uncite` is registered here, deliberately — see the doc

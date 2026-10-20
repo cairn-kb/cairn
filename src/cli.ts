@@ -1219,6 +1219,17 @@ export function formatClaim(
 }
 
 /**
+ * Printed next to a generated document's title, nowhere else: a machine
+ * wrote this one and nobody on the team has, so a person deciding whether to
+ * trust it needs that said beside the title, not buried in the metadata line
+ * underneath. Empty for a document nobody generated.
+ */
+function generatedLabel(doc: Document): string {
+  if (!doc.generated) return ""
+  return doc.repo ? ` ${ui.dim(`(generated · ${doc.repo})`)}` : ` ${ui.dim("(generated)")}`
+}
+
+/**
  * One document in full. Deliberately thinner than `formatClaim`: a document
  * has no status, no reviewer, no abstract — it is raw imported material
  * nobody has judged, so there is nothing here to report about a review that
@@ -1226,7 +1237,12 @@ export function formatClaim(
  */
 export function formatDocument(doc: Document): string {
   const where = doc.source ? `imported from ${doc.source}` : "adopted from a claim"
-  return [ui.bold(doc.title), ui.dim(`${doc.id} · document · ${where}`), "", doc.text].join("\n")
+  return [
+    `${ui.bold(doc.title)}${generatedLabel(doc)}`,
+    ui.dim(`${doc.id} · document · ${where}`),
+    "",
+    doc.text,
+  ].join("\n")
 }
 
 /**
@@ -1241,7 +1257,7 @@ export function formatDocumentHits(docs: Document[]): string {
   const width = Math.max(...docs.map((d) => d.id.length))
   const head = `${docs.length} document${docs.length === 1 ? "" : "s"}`
   const lines = docs.map(
-    (d) => `  ${ui.dim(d.id.padEnd(width))}  ${ui.dim("document")}  ${d.title}`,
+    (d) => `  ${ui.dim(d.id.padEnd(width))}  ${ui.dim("document")}  ${d.title}${generatedLabel(d)}`,
   )
   return [head, ...lines].join("\n")
 }
@@ -2076,7 +2092,8 @@ export async function main(argv: string[]): Promise<void> {
       break
     }
     case "mcp": {
-      const server = createMcpServer(await openStore(), await openSink())
+      const mode = (await readConfig(ROOT))?.mode
+      const server = createMcpServer(await openStore(), await openSink(), { mode })
       await server.connect(new StdioServerTransport())
       break
     }
