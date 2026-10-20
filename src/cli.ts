@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import { readdir, readFile } from "node:fs/promises"
+import { readdir } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { join } from "node:path"
 import type { EventSink, Stats } from "./events"
@@ -22,10 +22,10 @@ import type { ProviderId } from "./providers"
 import { EventLog } from "./events"
 import { HttpEventSink, HttpStore } from "./http-store"
 import { FileStore } from "./store"
-import { normalizeSource, parseImport } from "./documents"
+import { normalizeSource } from "./documents"
+import { finishTally, importFile, newTally, tally, type CitedUpdate, type ImportSummary } from "./import-file"
 import { EMPTY_RETRACT_REASON, EMPTY_SUPPORTS } from "@cairn-kb/protocol/event-kinds"
 import type { Claim, Document, Store } from "@cairn-kb/protocol/types"
-import { STATUSES } from "@cairn-kb/protocol/types"
 import { colorsEnabled, createUi, progressLine } from "./ui"
 import { wordmark } from "./wordmark"
 import { newConfig, readConfig, writeConfig } from "./config"
@@ -672,92 +672,13 @@ function isEnoent(err: unknown): boolean {
   return err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT"
 }
 
-/**
- * This used to write each imported file as a CLAIM —
- * approved on arrival, keyed on its first heading. A heading is a noun
- * phrase, not "one assertive sentence a reviewer judges", so the result was
- * material that was approved, agent-visible, and never judged by anyone. It
- * now writes each file as a `Document` through `store.importDocument`
- * instead: searchable and readable, but never proposed, never approved, and
- * never counted in `team_knowledge_map` — because nobody reviewed it. An
- * agent that reads one and learns something proposes a claim citing it, the
- * same as it would for anything else it read.
- *
- * Takes no author: `DocumentInput` carries none. A claim's `source.author` is
- * who is answerable for an assertion a human is about to judge; a document
- * is neither, so there is nothing here for an author to be attached to.
- */
-export interface ImportSummary {
-  /** Files with no document at this source path before this run. */
-  created: number
-  /** Files whose text changed since the last import — updated in place,
-   *  same id, same citations. Never a second document: `importDocument`
-   *  matches on `source` first, so a changed file replaces what it was
-   *  imported as rather than shadowing it the way a claim-based import had
-   *  to. */
-  updated: number
-  /** Files whose text is byte-identical to what is already stored there. */
-  unchanged: number
-  /**
-   * Of the updated documents, those some claim cites.
-   *
-   * A citation records the document's hash at the moment it was attached, and
-   * an update in place keeps the document's id, so an ordinary edit to a cited
-   * file changes the text every citation on it points at. `cairn show` and the
-   * review screen both warn about that afterwards; this is the same fact at
-   * the moment it is caused, which was the one moment nobody was told about
-   * it. Empty on a run that updated nothing, and empty when nothing updated is
-   * cited — the common case, and no news.
-   */
-  cited: CitedUpdate[]
-  /**
-   * Documents with nothing in them. Skipped rather than sent: the hosted store
-   * refuses an empty body with a 400 whose sentence names no file, so one
-   * stray empty document used to abort the whole directory with advice that
-   * could not be followed.
-   */
-  empty: string[]
-}
+export type { CitedUpdate, ImportSummary } from "./import-file"
 
 /**
- * One updated document that carries citations, and which claims those are.
- * Named rather than counted: "1 cited document changed" cannot be acted on, and
- * the operator's next move is to go and read the claims.
+ * `cairn import <dir>`: every `.md` under `dir`, sourced relative to it and
+ * tagged with no repo. See `importFile` for what each file becomes, and
+ * `ImportSummary` for what is counted.
  */
-export interface CitedUpdate {
-  id: string
-  title: string
-  /** The path this document was imported from — what the operator just edited,
-   *  and the only field here they will recognise without a lookup. */
-  source: string | null
-  /** Every claim citing it, in ANY status. Not narrowed to approved: the
-   *  warning `cairn show` gives renders for a claim in any status, and a
-   *  narrower rule here would report drift the terminal then shows on a claim
-   *  this never mentioned. */
-  claims: string[]
-}
-
-/**
- * Which of these documents are cited, and by what.
- *
- * Four `list` calls, and they are why this is skipped entirely when a run
- * updated nothing: against the hosted store each one is a round trip, and an
- * import over an unchanged directory is the common case. There is no
- * document-to-claims lookup on the `Store` seam — adding one would mean a
- * hosted route as well — so this reads the claims it already can and filters.
- */
-async function citedAmong(store: Store, docs: Document[]): Promise<CitedUpdate[]> {
-  const claims = (await Promise.all(STATUSES.map((status) => store.list(status)))).flat()
-  return docs
-    .map((doc) => ({
-      id: doc.id,
-      title: doc.title,
-      source: doc.source,
-      claims: claims.filter((c) => c.cites.some((cite) => cite.doc === doc.id)).map((c) => c.id),
-    }))
-    .filter((u) => u.claims.length > 0)
-}
-
 export async function runImport(
   store: Store,
   dir: string,
@@ -776,42 +697,12 @@ export async function runImport(
     throw err
   })
   let done = 0
-  let created = 0
-  let updated = 0
-  let unchanged = 0
-  const empty: string[] = []
-  const updatedDocs: Document[] = []
+  const t = newTally()
   for (const path of files) {
-    const raw = await readFile(path, "utf-8")
-    // Parsed before the emptiness check, not after: a file that is nothing but
-    // frontmatter has no document in it, and used to import as a body of YAML.
-    const { title, text } = parseImport(raw, path)
-    if (text === "") {
-      // Named, not swallowed: "nothing happened" with no path is the same dead
-      // end as the 400 this replaces.
-      empty.push(path)
-      onProgress?.(++done, files.length)
-      continue
-    }
-    const { document, outcome } = await store.importDocument({
-      title,
-      text,
-      source: normalizeSource(dir, path),
-    })
-    if (outcome === "created") created++
-    else if (outcome === "updated") {
-      updated++
-      updatedDocs.push(document)
-    } else if (outcome === "unchanged") unchanged++
-    // Exhaustive, not a fallback: `ImportOutcome` has exactly three values
-    // today, but a silent `else unchanged++` would miscount a fourth one
-    // added later rather than fail loudly.
-    else throw new Error(`unexpected import outcome: ${outcome}`)
+    tally(t, path, await importFile(store, path, normalizeSource(dir, path)))
     onProgress?.(++done, files.length)
   }
-  // Only when something actually changed: see `citedAmong` on what this costs.
-  const cited = updatedDocs.length === 0 ? [] : await citedAmong(store, updatedDocs)
-  return { created, updated, unchanged, empty, cited }
+  return finishTally(store, t)
 }
 
 export interface BackfillResult {
