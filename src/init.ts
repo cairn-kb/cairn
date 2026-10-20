@@ -1,5 +1,5 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
-import { basename, dirname, join } from "node:path"
+import { lstat, mkdir, readFile, readlink, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
+import { basename, dirname, join, resolve } from "node:path"
 import { COMPILED } from "./version"
 import { desktopConfigPath, detectAgents } from "./agents"
 import { codexBlock, mergeCodexConfig } from "./codex-config"
@@ -171,6 +171,25 @@ const AGENTS_IMPORT = "@AGENTS.md"
  */
 export function importsAgentsMd(text: string): boolean {
   return text.split("\n").some((l) => l.trim() === AGENTS_IMPORT || l.trim() === "@./AGENTS.md")
+}
+
+/** Where a symlink points, resolved against its directory; null for anything else. */
+async function linkTarget(path: string): Promise<string | null> {
+  try {
+    if (!(await lstat(path)).isSymbolicLink()) return null
+    return resolve(dirname(path), await readlink(path))
+  } catch {
+    return null
+  }
+}
+
+/** Whether two paths, after following links, are one file. False if either is missing. */
+export async function sameFile(a: string, b: string): Promise<boolean> {
+  try {
+    return (await realpath(a)) === (await realpath(b))
+  } catch {
+    return false
+  }
 }
 
 /** Add the import to a CLAUDE.md, keeping what the teammate wrote. */
@@ -424,11 +443,26 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
     // read AGENTS.md either way. The block stays in AGENTS.md alone: a copy in
     // CLAUDE.md as well would be the same instructions read twice, so one an
     // older run left there comes out.
+    //
+    // CLAUDE.md and AGENTS.md linked to each other, in either direction, are
+    // one file and need nothing. Otherwise a CLAUDE.md that is a symlink is
+    // never written through: it is a file shared on purpose, so the person
+    // adds the import to it themselves.
     if (scope === "project" && agents.includes("claude") && basename(instructions) === "AGENTS.md") {
       const claudeMd = join(dirname(instructions), "CLAUDE.md")
+      const link = await linkTarget(claudeMd)
       const text = await read(claudeMd)
-      if (!importsAgentsMd(text)) {
-        pending.push({ path: claudeMd, content: addAgentsImport(removeBlock(text)) })
+      const linked = await sameFile(claudeMd, instructions)
+      if (!linked && link !== null && !importsAgentsMd(text)) {
+        nextSteps.push(
+          `${claudeMd} is a symlink to ${link}, so cairn left it alone. Add a line reading ` +
+            `${AGENTS_IMPORT} to ${link} so Claude Code reads ${instructions}.`,
+        )
+      }
+      if (!linked && link === null) {
+        const cleaned = removeBlock(text)
+        const content = importsAgentsMd(cleaned) ? cleaned : addAgentsImport(cleaned)
+        if (content !== text) pending.push({ path: claudeMd, content })
       }
     }
     // Codex reads ~/.codex/AGENTS.md everywhere and a project's AGENTS.md, but
@@ -466,6 +500,12 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
  * renaming across filesystems is not atomic and can fail outright.
  */
 export async function writeAtomic(path: string, content: string): Promise<void> {
+  // A symlinked file — `CLAUDE.md -> AGENTS.md`, a dotfiles-managed
+  // ~/.claude/CLAUDE.md — is written at its target. Renaming over the link
+  // itself would replace it with a copy and quietly unshare the file.
+  if ((await linkTarget(path)) !== null) {
+    path = await realpath(path).catch(() => path)
+  }
   await mkdir(dirname(path), { recursive: true })
   const tmp = `${path}.cairn-${process.pid}-${Date.now()}.tmp`
   try {

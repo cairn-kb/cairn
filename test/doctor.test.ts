@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { checkAuth, checkCairnRoot, checkCommandMatches, checkConfig, checkGeneration, checkInstructions, checkSourceLaunch, checkStore, checkTelemetry, findMcpConfig, runDoctor } from "../src/doctor"
@@ -309,6 +309,15 @@ test("a CLAUDE.md that imports an AGENTS.md without the block still fails", asyn
   await writeFile(join(cwd, "AGENTS.md"), "notes\n", "utf-8")
   const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
   expect(r.status).toBe("fail")
+})
+
+test("a CLAUDE.md that is a symlink to AGENTS.md, which has the block, passes", async () => {
+  await writeFile(join(cwd, "AGENTS.md"), "notes\n<!-- cairn:start -->\nrules\n<!-- cairn:end -->\n", "utf-8")
+  await symlink("AGENTS.md", join(cwd, "CLAUDE.md"))
+  await writeMcp(cairnEntry())
+  const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
+  expect(r.status).toBe("ok")
+  expect(r.detail).toContain("same file")
 })
 
 test("telemetry with no config reports not configured", async () => {

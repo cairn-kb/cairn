@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -842,5 +842,80 @@ test("re-running init replaces an older block with the new one, without a second
     expect(md).toContain(RULES_BLOCK)
     expect(md.match(/<!-- cairn:start -->/g)).toHaveLength(1)
     expect(md.match(/team_knowledge_map/g)).toHaveLength(1)
+  })
+})
+
+// --- symlinked instruction files ---------------------------------------------
+//
+// `ln -s AGENTS.md CLAUDE.md` is a documented way to share one file. Writing an
+// import through the link would put AGENTS.md's content plus `@AGENTS.md` into
+// it, and the rename would swap the link for a copy.
+
+test("writing through a symlink updates its target and keeps the link", async () => {
+  await writeFile(join(home, "target.md"), "old\n", "utf-8")
+  await symlink("target.md", join(home, "link.md"))
+  await writeAtomic(join(home, "link.md"), "new\n")
+  expect((await lstat(join(home, "link.md"))).isSymbolicLink()).toBe(true)
+  expect(await readlink(join(home, "link.md"))).toBe("target.md")
+  expect(await readFile(join(home, "target.md"), "utf-8")).toBe("new\n")
+})
+
+test("CLAUDE.md -> AGENTS.md: the block lands once, and the link survives", async () => {
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    await writeFile(join(repo, "AGENTS.md"), "# Ours\n", "utf-8")
+    await symlink("AGENTS.md", join(repo, "CLAUDE.md"))
+    const r = await projectRun(repo)
+    expect(r.written).not.toContain(join(repo, "CLAUDE.md"))
+    expect((await lstat(join(repo, "CLAUDE.md"))).isSymbolicLink()).toBe(true)
+    const md = await readFile(join(repo, "AGENTS.md"), "utf-8")
+    expect(md.match(/<!-- cairn:start -->/g)).toHaveLength(1)
+    expect(md.match(/# Ours/g)).toHaveLength(1)
+    expect(importsAgentsMd(md)).toBe(false)
+  })
+})
+
+test("AGENTS.md -> CLAUDE.md: the block lands once, and the link survives", async () => {
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    await writeFile(join(repo, "CLAUDE.md"), "# Ours\n", "utf-8")
+    await symlink("CLAUDE.md", join(repo, "AGENTS.md"))
+    await projectRun(repo)
+    expect((await lstat(join(repo, "AGENTS.md"))).isSymbolicLink()).toBe(true)
+    const md = await readFile(join(repo, "CLAUDE.md"), "utf-8")
+    expect(md.match(/<!-- cairn:start -->/g)).toHaveLength(1)
+    expect(md.match(/# Ours/g)).toHaveLength(1)
+    expect(importsAgentsMd(md)).toBe(false)
+  })
+})
+
+test("a CLAUDE.md symlinked elsewhere is left alone, with the import to add by hand", async () => {
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    await writeFile(join(repo, "AGENTS.md"), "# Ours\n", "utf-8")
+    await writeFile(join(repo, "shared-claude.md"), "# Shared\n", "utf-8")
+    await symlink("shared-claude.md", join(repo, "CLAUDE.md"))
+    const r = await projectRun(repo)
+    expect(r.written).not.toContain(join(repo, "CLAUDE.md"))
+    expect((await lstat(join(repo, "CLAUDE.md"))).isSymbolicLink()).toBe(true)
+    expect(await readFile(join(repo, "shared-claude.md"), "utf-8")).toBe("# Shared\n")
+    const step = r.nextSteps.find((s) => s.includes(join(repo, "CLAUDE.md")))
+    expect(step).toBeDefined()
+    expect(step).toContain("@AGENTS.md")
+    expect(step).toContain(join(repo, "shared-claude.md"))
+  })
+})
+
+test("a CLAUDE.md that already imports AGENTS.md still loses a stale block", async () => {
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    await writeFile(join(repo, "AGENTS.md"), "# Ours\n", "utf-8")
+    await writeFile(join(repo, "CLAUDE.md"), upsertBlock("# Claude notes\n@AGENTS.md\n", "OLD RULES"), "utf-8")
+    const r = await projectRun(repo)
+    expect(r.written).toContain(join(repo, "CLAUDE.md"))
+    const claude = await readFile(join(repo, "CLAUDE.md"), "utf-8")
+    expect(claude).not.toContain("<!-- cairn:start -->")
+    expect(claude).toContain("# Claude notes")
+    expect(claude.match(/@AGENTS\.md/g)).toHaveLength(1)
   })
 })
