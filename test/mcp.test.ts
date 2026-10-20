@@ -10,6 +10,7 @@ import { EventLog } from "../src/events"
 import type { EventSink } from "../src/events"
 import {
   ABSTRACT_GUIDANCE,
+  ALL_SCOPES,
   CITE_DESCRIPTION,
   createMcpServer,
   createTools,
@@ -19,6 +20,9 @@ import {
   SERVER_INSTRUCTIONS,
   TEAM_WRITE_REFUSAL,
   type KbTools,
+  type ServerOptions,
+  type ToolSink,
+  type ToolStore,
 } from "../src/mcp"
 import { FileStore } from "../src/store"
 import type { Claim, CiteInput } from "@cairn-kb/protocol/types"
@@ -47,6 +51,9 @@ const proposal = (claim: string) => ({
   cites: [],
   tags: [],
 })
+
+/** What `cairn mcp` passes, less the hooks a given test adds itself. */
+const STDIO: ServerOptions = { version: VERSION, via: "stdio" }
 
 let root: string
 let tools: KbTools
@@ -210,7 +217,7 @@ test("kbMap records the calling agent and session", async () => {
   await tools.kbMap({ agent: "cursor", session: "s1" })
   await tools.kbMap({ agent: "claude", session: "s2" })
   const events = (await log.all()).filter((e) => e.kind === "map")
-  expect(events[0]!.meta).toEqual({ agent: "cursor", session: "s1" })
+  expect(events[0]!.meta).toEqual({ agent: "cursor", session: "s1", via: "stdio" })
   // Reads per session needs the denominator.
   expect((await log.stats()).sessions).toBe(2)
 })
@@ -343,7 +350,7 @@ test("frontmatter claiming approval does not escape the inbox", async () => {
 test("createMcpServer registers exactly the six expected tools and enforces the read gate end to end", async () => {
   const store = new FileStore(root, log)
   await store.init()
-  const server = createMcpServer(store, log)
+  const server = createMcpServer(store, log, STDIO)
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: "test-client", version: "0.0.0" })
@@ -474,7 +481,7 @@ test("the map admits a missing abstract rather than passing the claim off as one
  *  handshake told it. The annotations, the version and the instructions are
  *  only observable from the client side, which is the side that acts on them. */
 async function connected(store: FileStore, log: EventLog) {
-  const server = createMcpServer(store, log)
+  const server = createMcpServer(store, log, STDIO)
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: "test-client", version: "0.0.0" })
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
@@ -585,11 +592,17 @@ test("the search description says what search holds", async () => {
 })
 
 test("the search guidance lives in a leaf module both init and the server import", async () => {
-  // A leaf, so the server does not load init's file-writing code to read one string.
-  expect(staticSpecifiers(await Bun.file(join(import.meta.dir, "..", "src", "guidance.ts")).text())).toEqual([])
-  const mcp = staticSpecifiers(await Bun.file(join(import.meta.dir, "..", "src", "mcp.ts")).text())
-  expect(mcp).toContain("./guidance")
-  expect(mcp).not.toContain("./init")
+  // A leaf, so the server does not load init's file-writing code to read one
+  // string. The leaf lives in the mcp package now, since the server does, and
+  // src/guidance.ts hands the same string on to init.
+  const pkg = join(import.meta.dir, "..", "packages", "mcp", "src")
+  expect(staticSpecifiers(await Bun.file(join(pkg, "guidance.ts")).text())).toEqual([])
+  const tools = staticSpecifiers(await Bun.file(join(pkg, "tools.ts")).text())
+  expect(tools).toContain("./guidance")
+  expect(tools.some((s) => s.includes("init"))).toBe(false)
+  expect(staticSpecifiers(await Bun.file(join(import.meta.dir, "..", "src", "guidance.ts")).text())).toEqual([
+    "@cairn-kb/mcp",
+  ])
   expect(staticSpecifiers(await Bun.file(join(import.meta.dir, "..", "src", "init.ts")).text())).toContain("./guidance")
 })
 
@@ -1105,8 +1118,8 @@ test("kbWriteDocument writes nothing on a validation refusal", async () => {
   expect(await store.listDocuments()).toEqual([])
 })
 
-test("team_knowledge_write_document is refused in team mode, and writes nothing", async () => {
-  const server = createMcpServer(store, log, { mode: "team" })
+test("team_knowledge_write_document is refused when the CLI passes its team-mode refusal, and writes nothing", async () => {
+  const server = createMcpServer(store, log, { ...STDIO, teamWriteRefusal: TEAM_WRITE_REFUSAL })
   const client = await (async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     const c = new Client({ name: "test-client", version: "0.0.0" })
@@ -1124,8 +1137,8 @@ test("team_knowledge_write_document is refused in team mode, and writes nothing"
   await client.close()
 })
 
-test("team_knowledge_write_document works when mode defaults to local", async () => {
-  const server = createMcpServer(store, log)
+test("team_knowledge_write_document works when no refusal is passed", async () => {
+  const server = createMcpServer(store, log, STDIO)
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: "test-client", version: "0.0.0" })
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
@@ -1143,7 +1156,7 @@ test("team_knowledge_write_document works when mode defaults to local", async ()
 test("onSearchResult is called with the hit count, from the server handler only", async () => {
   await store.importDocument({ title: "d", text: "Quetzalcoatl", source: "d.md" })
   const seen: number[] = []
-  const server = createMcpServer(store, log, { onSearchResult: async (n) => { seen.push(n) } })
+  const server = createMcpServer(store, log, { ...STDIO, onSearchResult: async (n) => { seen.push(n) } })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: "test-client", version: "0.0.0" })
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
@@ -1156,6 +1169,7 @@ test("onSearchResult is called with the hit count, from the server handler only"
 test("team_knowledge_search still returns hits when onSearchResult rejects", async () => {
   await store.importDocument({ title: "d", text: "Quetzalcoatl", source: "d.md" })
   const server = createMcpServer(store, log, {
+    ...STDIO,
     onSearchResult: async () => {
       throw new Error("hook failed")
     },
@@ -1176,7 +1190,7 @@ test("team_knowledge_search still returns hits when onSearchResult throws synchr
   const throwsSync = (() => {
     throw new Error("sync fail")
   }) as unknown as (hits: number) => Promise<void>
-  const server = createMcpServer(store, log, { onSearchResult: throwsSync })
+  const server = createMcpServer(store, log, { ...STDIO, onSearchResult: throwsSync })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: "test-client", version: "0.0.0" })
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
@@ -1197,9 +1211,165 @@ test("createTools(...).kbSearch alone never calls onSearchResult — only the se
   // A server exists, over the SAME store, with the hook wired for real —
   // proving `seen` has a live wire to a spy — but this test deliberately
   // never routes its call through it.
-  createMcpServer(store, log, { onSearchResult: async (n) => { seen.push(n) } })
+  createMcpServer(store, log, { ...STDIO, onSearchResult: async (n) => { seen.push(n) } })
   const t = createTools(store, log)
   const result = await t.kbSearch("Quetzalcoatl")
   expect(result.hits.length).toBe(1)
   expect(seen).toEqual([])
+})
+
+// --- the @cairn-kb/mcp surface: scopes, via, and the generated write --------
+
+async function serve(s: ToolStore, sink: ToolSink, opts: ServerOptions) {
+  const server = createMcpServer(s, sink, opts)
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  const client = new Client({ name: "test-client", version: "0.0.0" })
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+  return client
+}
+
+/** A store that records `writeGenerated` and refuses anything else, so a
+ *  tool reaching for some other write path fails loudly. */
+function spyStore(): { store: ToolStore; writes: unknown[] } {
+  const writes: unknown[] = []
+  const nope = () => {
+    throw new Error("spy store: not expected here")
+  }
+  const s: ToolStore = {
+    list: nope,
+    get: nope,
+    getDocument: nope,
+    search: nope,
+    searchDocuments: nope,
+    propose: nope,
+    cite: nope,
+    async writeGenerated(input) {
+      writes.push(input)
+      return {
+        document: {
+          id: "doc-spy",
+          title: input.title,
+          text: input.text,
+          source: `generated:${input.repo}/${input.slug}`,
+          created: "2026-10-20T00:00:00.000Z",
+          updated: "2026-10-20T00:00:00.000Z",
+          hash: "h",
+          generated: true,
+          repo: input.repo,
+        },
+        outcome: "created",
+      }
+    },
+  }
+  return { store: s, writes }
+}
+
+/** A sink that keeps what it is handed, in order. */
+function recordingSink(): ToolSink & { kinds: string[] } {
+  const kinds: string[] = []
+  return {
+    kinds,
+    async append(kind) {
+      kinds.push(kind)
+    },
+    async appendMany(events) {
+      for (const e of events) kinds.push(e.kind)
+    },
+  }
+}
+
+const WRITE_ARGS = { repo: "acme/api", slug: "architecture", title: "Arch", text: "How it fits.", agent: "cursor" }
+
+test("a server granted only knowledge:read lists exactly the three read tools", async () => {
+  const client = await serve(store, log, { ...STDIO, scopes: new Set(["knowledge:read"]) })
+  const { tools: listed } = await client.listTools()
+  expect(listed.map((t) => t.name).sort()).toEqual([
+    "team_knowledge_map",
+    "team_knowledge_read",
+    "team_knowledge_search",
+  ])
+  await client.close()
+})
+
+test("a server granted ALL_SCOPES lists the read tools and the three write tools", async () => {
+  const client = await serve(store, log, { ...STDIO, scopes: ALL_SCOPES })
+  const { tools: listed } = await client.listTools()
+  expect(listed.map((t) => t.name).sort()).toEqual([
+    "team_knowledge_cite",
+    "team_knowledge_map",
+    "team_knowledge_propose",
+    "team_knowledge_read",
+    "team_knowledge_search",
+    "team_knowledge_write_document",
+  ])
+  await client.close()
+})
+
+test("a search event records the query, how many hits it returned, and the transport", async () => {
+  const p = await tools.kbPropose({ ...proposeArgs, claim: "Quetzalcoatl billing uses Postgres" })
+  await store.move(p.id, "approved")
+  await store.importDocument({ title: "d", text: "Quetzalcoatl notes", source: "d.md" })
+  const client = await serve(store, log, STDIO)
+  await client.callTool({ name: "team_knowledge_search", arguments: { query: "Quetzalcoatl" } })
+  const last = (await log.all()).at(-1)!
+  expect(last.kind).toBe("search")
+  expect(last.meta).toEqual({ query: "Quetzalcoatl", hits: 2, via: "stdio" })
+  await client.close()
+})
+
+test("every event the tools append says which transport it came through", async () => {
+  const t = createTools(store, log, "connector")
+  await t.kbMap()
+  await t.kbSearch("anything")
+  await t.kbRead(["missing-claim", "doc-missing"])
+  const events = await log.all()
+  expect(events.length).toBe(4)
+  for (const e of events) expect(e.meta?.via).toBe("connector")
+})
+
+test("team_knowledge_write_document hands the store exactly repo, slug, title, text and agent", async () => {
+  const spy = spyStore()
+  const client = await serve(spy.store, recordingSink(), STDIO)
+  const result = await client.callTool({ name: "team_knowledge_write_document", arguments: WRITE_ARGS })
+  expect(result.isError).toBeFalsy()
+  expect(spy.writes).toEqual([WRITE_ARGS])
+  expect(JSON.parse((result.content as { text: string }[])[0]!.text)).toEqual({ id: "doc-spy", outcome: "created" })
+  await client.close()
+})
+
+test("a teamWriteRefusal is returned as the tool error, and the store is never asked", async () => {
+  const spy = spyStore()
+  const refusal = "team_knowledge_write_document: not here."
+  const client = await serve(spy.store, recordingSink(), { ...STDIO, teamWriteRefusal: refusal })
+  const result = await client.callTool({ name: "team_knowledge_write_document", arguments: WRITE_ARGS })
+  expect(result.isError).toBe(true)
+  expect((result.content as { text: string }[])[0]!.text).toBe(refusal)
+  expect(spy.writes).toEqual([])
+  await client.close()
+})
+
+test("an empty title or text is refused by the tool's schema, before the store", async () => {
+  const spy = spyStore()
+  const client = await serve(spy.store, recordingSink(), STDIO)
+  for (const bad of [{ title: "" }, { text: "" }]) {
+    const result = await client.callTool({
+      name: "team_knowledge_write_document",
+      arguments: { ...WRITE_ARGS, ...bad },
+    })
+    expect(result.isError).toBe(true)
+  }
+  expect(spy.writes).toEqual([])
+  await client.close()
+})
+
+test("team_knowledge_write_document appends no event through the sink", async () => {
+  // The hosted route records its own generate_document event, and the
+  // events endpoint refuses that kind from a client, so the tool must not.
+  const spy = spyStore()
+  const sink = recordingSink()
+  const client = await serve(spy.store, sink, STDIO)
+  await client.callTool({ name: "team_knowledge_write_document", arguments: WRITE_ARGS })
+  expect(spy.writes.length).toBe(1)
+  expect(sink.kinds).toEqual([])
+  await client.close()
 })

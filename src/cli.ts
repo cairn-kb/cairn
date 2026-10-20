@@ -4,7 +4,7 @@ import { readdir } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { isAbsolute, join, relative, resolve } from "node:path"
 import type { EventSink, Stats } from "./events"
-import { createMcpServer, DEFAULT_SEARCH_LIMIT } from "./mcp"
+import { createMcpServer, DEFAULT_SEARCH_LIMIT, TEAM_WRITE_REFUSAL } from "./mcp"
 import { ABSENCE_FRAMING } from "@cairn-kb/protocol/absence"
 import { isRateLimit, rootMessage } from "./errors"
 import { generateAbstract, resolveGeneration } from "./generate"
@@ -1323,8 +1323,8 @@ export function formatClaim(
   // provenance kind lands in `provenance.ts` and not here. See that file.
   for (const line of renderProvenance(provenanceOf(claim, people))) lines.push(ui.dim(line))
   // The header line above already says "· retracted ·" and stops — an agent
-  // gets the reason through the MCP tombstone (src/mcp.ts) and a script gets
-  // it through `--json`, but a human running `show` on their own withdrawn
+  // gets the reason through the MCP tombstone (packages/mcp/src/tools.ts) and a
+  // script gets it through `--json`, but a human running `show` on their own withdrawn
   // work in a terminal got neither, despite the README naming `show` as the
   // way to check it. `claim.retracted` is non-null exactly when `status ===
   // "retracted"` (packages/protocol/src/types.ts), so this only ever appears then.
@@ -1456,7 +1456,7 @@ export function formatDocument(doc: Document): string {
  * interleaved with them. A claim is durable knowledge a human approved; a
  * document is unreviewed source material, and the two must stay visibly
  * distinct in a list a person is about to act on the same way
- * `team_knowledge_search` (src/mcp.ts) keeps them apart for an agent.
+ * `team_knowledge_search` (packages/mcp/src/tools.ts) keeps them apart for an agent.
  */
 export function formatDocumentHits(docs: Document[]): string {
   if (docs.length === 0) return ""
@@ -2099,7 +2099,7 @@ export async function main(argv: string[]): Promise<void> {
       }
       const store = await openStore()
       // The `doc-` prefix is the whole routing decision, the same way
-      // `kbRead` (src/mcp.ts) routes on it — never a claim lookup that falls
+      // `kbRead` (packages/mcp/src/tools.ts) routes on it — never a claim lookup that falls
       // back to a document lookup on a miss, which would make a stale claim
       // id and a real document id fail identically.
       if (id.startsWith("doc-")) {
@@ -2300,7 +2300,9 @@ export async function main(argv: string[]): Promise<void> {
     case "mcp": {
       const mode = (await readConfig(ROOT))?.mode
       const server = createMcpServer(await openStore(), await openSink(), {
-        mode,
+        version: VERSION,
+        via: "stdio",
+        teamWriteRefusal: mode === "team" ? TEAM_WRITE_REFUSAL : undefined,
         onSearchResult: (hits) => recordSearchHit(ROOT, hits),
       })
       await server.connect(new StdioServerTransport())

@@ -72,3 +72,27 @@ test("the comment stripper defeats the shape that would fake a pass", () => {
   expect(stripComments('// abstractBy: "human"\n').match(WRITE)).toBeNull()
   expect(stripComments('  abstractBy: "human",\n')).toContain('abstractBy: "human"')
 })
+
+// --- the MCP tool inventory ------------------------------------------------
+//
+// The tools an agent can call are a capability inventory too, and one with a
+// deliberate hole: no `team_knowledge_uncite` exists, because detaching a
+// citation is human-only (see `Store.uncite`). The registrations live in the
+// mcp package, which both `cairn mcp` and the hosted service serve, so this
+// reads that file — comments stripped, so a deleted registration whose comment
+// survived cannot keep the list looking whole.
+const MCP_SERVER = resolve(import.meta.dir, "..", "packages", "mcp", "src", "server.ts")
+
+test("the MCP server registers exactly the six team_knowledge tools, and no uncite", () => {
+  const src = stripComments(readFileSync(MCP_SERVER, "utf-8"))
+  const names = [...src.matchAll(/registerTool\(\s*"([a-z_]+)"/g)].map((m) => m[1]!).sort()
+  expect(names).toEqual([
+    "team_knowledge_cite",
+    "team_knowledge_map",
+    "team_knowledge_propose",
+    "team_knowledge_read",
+    "team_knowledge_search",
+    "team_knowledge_write_document",
+  ])
+  expect(src).not.toContain("team_knowledge_uncite")
+})

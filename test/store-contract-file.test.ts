@@ -17,8 +17,8 @@ for (const c of [...CONTRACT_CASES, ...DOCUMENT_CONTRACT_CASES]) {
     const log = new EventLog(root)
     const store = new FileStore(root, log)
     await store.init()
-    // The same append `createTools`' read path makes (src/mcp.ts): kind
-    // `read`, carrying the claim's id — which is what put a read event in
+    // The same append `createTools`' read path makes
+    // (packages/mcp/src/tools.ts): kind `read`, carrying the claim's id — which is what put a read event in
     // front of the adoption guard in the first place.
     // A fixed literal, distinct from any reviewer identity `review()` ever
     // produces: FileStore's `review()` never sets `reviewer` at all (it stays

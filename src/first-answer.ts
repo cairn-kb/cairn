@@ -27,7 +27,7 @@ export function suggestQuestion(titles: string[], label: string): FirstQuestion 
 
 /**
  * Discards every event handed to it. `kbSearch` logs a `search` event as
- * part of running one — see `createTools` in `src/mcp.ts` — and `init`'s own
+ * part of running one — see `createTools` in `packages/mcp/src/tools.ts` — and `init`'s own
  * demonstration search is not a real agent asking a real question, so it
  * must not move `stats().searches` the way one would.
  */

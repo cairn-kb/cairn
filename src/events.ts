@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { APPROVE_KINDS, RESOLVE_KINDS } from "@cairn-kb/protocol/event-kinds"
 import { statsFromEvents } from "@cairn-kb/protocol/stats"
 import type { EventKind, KbEvent, Stats } from "@cairn-kb/protocol/stats"
+import type { EventInput } from "@cairn-kb/mcp"
 
 export { APPROVE_KINDS, RESOLVE_KINDS }
 // Re-exported from their new home: the counting moved to packages/protocol/src/stats.ts so the
@@ -11,18 +12,16 @@ export { APPROVE_KINDS, RESOLVE_KINDS }
 export { statsFromEvents }
 export type { EventKind, KbEvent, Stats }
 
+// `EventInput` moved to @cairn-kb/mcp with the tools that build it. The tools
+// need only `append` and `appendMany` (the package's `ToolSink`); the reading
+// half of `EventSink` below stays the CLI's.
+export type { EventInput }
+
 /**
  * What the product needs from an event log. `EventLog` is the local
  * implementation; the hosted one follows the same three methods, so nothing
  * downstream of this interface depends on which it is.
  */
-/** One entry for `appendMany`. The same three fields `append` takes. */
-export interface EventInput {
-  kind: EventKind
-  id?: string
-  meta?: Record<string, unknown>
-}
-
 export interface EventSink {
   append(kind: EventKind, id?: string, meta?: Record<string, unknown>): Promise<void>
   /**
