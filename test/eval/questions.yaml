@@ -1,0 +1,167 @@
+# The public question set for scripts/eval.ts, written against test/eval/corpus.
+#
+# Every fact is a short literal substring of the corpus, matched after
+# lowercasing, collapsing whitespace and dropping `*`, `_` and backticks;
+# test/eval.test.ts checks each one. `hop: 2` means the facts sit in two
+# different documents. Questions marked "paraphrase" share no content word
+# with the document that answers them, so only a search that matches meaning
+# rather than vocabulary can find it.
+#
+# Nothing is held out: this set is public, so it measures, and decides nothing.
+corpus_commit: null
+questions:
+  # --- one document, worded like the document ---
+  - id: runtime-ceiling
+    question: What is the hard runtime ceiling for a Lattice job?
+    facts: ["hard runtime ceiling of 6 hours"]
+    hop: 1
+    held_out: false
+  - id: failover-targets
+    question: What are the RPO and RTO targets for regional failover?
+    facts: ["RPO of 5 minutes and an RTO of 45 minutes"]
+    hop: 1
+    held_out: false
+  - id: version-cadence
+    question: How often are Lattice versions cut, and who cuts them?
+    facts: ["every second Tuesday", "release captain"]
+    hop: 1
+    held_out: false
+  - id: backlog-dashboard
+    question: Which dashboard does the queue backlog runbook start from?
+    facts: ["Lattice / Queue health"]
+    hop: 1
+    held_out: false
+  - id: duplicate-impact
+    question: How many jobs ran twice in the duplicate runs incident?
+    facts: ["3,100 jobs ran twice"]
+    hop: 1
+    held_out: false
+  - id: log-retention
+    question: How long are Lattice logs retained, and what share of traces is kept?
+    facts: ["retained for 14 days", "10% of traces"]
+    hop: 1
+    held_out: false
+  - id: mtls-rotation
+    question: How often are mTLS certificates between Lattice components rotated?
+    facts: ["rotated every 72 hours"]
+    hop: 1
+    held_out: false
+  - id: ci-bun-version
+    question: Which Bun version does cairn's CI run?
+    facts: ["1.3.6 is what CI runs"]
+    hop: 1
+    held_out: false
+  - id: supported-releases
+    question: Which cairn releases are supported with security fixes?
+    facts: ["Only the latest release is supported"]
+    hop: 1
+    held_out: false
+  - id: dev-up
+    question: What does make dev-up start?
+    facts: ["local Postgres and two runners"]
+    hop: 1
+    held_out: false
+
+  # --- one document, paraphrase ---
+  - id: ship
+    question: How do we ship?
+    facts: ["make release VERSION="]
+    hop: 1
+    held_out: false
+  - id: credential-lifetime
+    question: How long until a machine credential stops working?
+    facts: ["expire after 12 hours"]
+    hop: 1
+    held_out: false
+  - id: abandon-site
+    question: Who makes the call to abandon the primary site?
+    facts: ["decided by the incident commander"]
+    hop: 1
+    held_out: false
+  - id: keeps-crashing
+    question: What happens to a task that keeps crashing?
+    facts: ["dead-letter table"]
+    hop: 1
+    held_out: false
+  - id: carry-pager
+    question: When is someone new allowed to carry the pager?
+    facts: ["after six weeks"]
+    hop: 1
+    held_out: false
+  - id: woken-overnight
+    question: What do engineers get after being woken up repeatedly overnight?
+    facts: ["a day off in lieu"]
+    hop: 1
+    held_out: false
+  - id: drain-rate
+    question: What is the maximum rate of taking work off the backlog?
+    facts: ["upper bound of roughly 4,000 dequeues per second"]
+    hop: 1
+    held_out: false
+  - id: botched-launch
+    question: What reverses a botched launch?
+    facts: ["latticectl rollback --to previous"]
+    hop: 1
+    held_out: false
+  - id: pager-hands
+    question: When does the pager change hands?
+    facts: ["Wednesdays at 11:00 UTC"]
+    hop: 1
+    held_out: false
+
+  # --- two documents ---
+  - id: canary-slo
+    question: What share of runner traffic does the canary take, and what start-time target must hold for it to be promoted?
+    facts: ["5% of runner traffic", "start within 60 seconds"]
+    hop: 2
+    held_out: false
+  - id: queue-revisit
+    question: When should the Postgres queue decision be revisited, and how many ready jobs fire the backlog alert?
+    facts: ["2,500 dequeues per second", "more than 20,000 jobs"]
+    hop: 2
+    held_out: false
+  - id: lease-skew
+    question: How long does a lease last, and what made leases look older than they were in the March 2026 incident?
+    facts: ["lease lasts 90 seconds", "clock skew"]
+    hop: 2
+    held_out: false
+  - id: failover-escalation
+    question: Who decides on a regional failover, and where does a page go if the primary on-call does not acknowledge?
+    facts: ["decided by the incident commander", "escalates to the secondary"]
+    hop: 2
+    held_out: false
+  - id: pause-scope
+    question: Which command pauses a tenant flooding the queue, and which token scope allows pausing a tenant?
+    facts: ["latticectl tenant pause", "lattice:admin"]
+    hop: 2
+    held_out: false
+  - id: budget-freeze
+    question: What happens to feature deploys when the error budget is spent, and when does the weekend deploy freeze start?
+    facts: ["feature deploys pause", "16:00 UTC on Friday"]
+    hop: 2
+    held_out: false
+  - id: rotation-join
+    question: How long after joining does an engineer go on call, and how often does the on-call rotation turn over?
+    facts: ["after six weeks", "rotation is weekly"]
+    hop: 2
+    held_out: false
+  - id: idempotency-dead-letter
+    question: After the duplicate runs incident, what became required for new job types, and after how many failed attempts does a run go to the dead-letter table?
+    facts: ["idempotency keys for all new job types", "after 5 failed attempts"]
+    hop: 2
+    held_out: false
+  - id: registry-runners
+    question: Where is the runner image pushed when a version is cut, and how far can runners be scaled during a backlog?
+    facts: ["registry.lattice.internal/runner", "exceed 400 runners"]
+    hop: 2
+    held_out: false
+  - id: channels
+    question: Which channel takes access requests during onboarding, and where do other teams ask Lattice questions?
+    facts: ["#access-requests", "#lattice-help"]
+    hop: 2
+    held_out: false
+  - id: contributing-security
+    question: How must commits to cairn be signed off, and how should a vulnerability in cairn be reported?
+    facts: ["git commit -s", "Report a vulnerability"]
+    hop: 2
+    held_out: false
