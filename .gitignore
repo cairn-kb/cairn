@@ -1,5 +1,8 @@
 node_modules
 dist/
+
+# Built by scripts/build-sqlite.sh, embedded by the release build
+src/native/darwin/
 *.tsbuildinfo
 
 # Local knowledge store — a user's runtime data, not source
