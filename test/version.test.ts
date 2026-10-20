@@ -31,7 +31,10 @@ test("a binary compiled without the release stamp still knows it is compiled", a
     const entry = join(dir, "entry.ts")
     await writeFile(entry, `import { COMPILED } from ${JSON.stringify(join(ROOT, "src", "version.ts"))}\nconsole.log(String(COMPILED))\n`)
     const bin = join(dir, "probe")
-    const build = Bun.spawnSync(["bun", "build", "--compile", "--outfile", bin, entry], { stdout: "pipe", stderr: "pipe" })
+    // Compile from the temp dir. Bun 1.3.6 writes a binary with a zeroed
+    // header, and still exits 0, when --outfile is on a different filesystem
+    // from the cwd — which it is on runners that mount /tmp as tmpfs.
+    const build = Bun.spawnSync(["bun", "build", "--compile", "--outfile", bin, entry], { cwd: dir, stdout: "pipe", stderr: "pipe" })
     expect(build.exitCode).toBe(0)
     const run = Bun.spawnSync([bin], { stdout: "pipe", stderr: "pipe" })
     expect(run.stdout.toString().trim()).toBe("true")
