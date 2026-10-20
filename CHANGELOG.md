@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-20
+
 ### Added
 
 - `cairn search` now shows the top results on the terminal, with a count of
