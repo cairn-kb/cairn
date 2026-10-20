@@ -1,8 +1,11 @@
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { COMPILED } from "./version"
+import { detectAgents } from "./agents"
+import type { Agent } from "./agents"
 
-export type Agent = "claude" | "cursor"
+export type { Agent } from "./agents"
+export { detectAgents } from "./agents"
 export type Scope = "global" | "project"
 
 const START = "<!-- cairn:start -->"
@@ -144,22 +147,6 @@ export async function resolveInstructionFile(cwd: string): Promise<string> {
   if (await exists(join(cwd, "AGENTS.md"))) return join(cwd, "AGENTS.md")
   if (await exists(join(cwd, "CLAUDE.md"))) return join(cwd, "CLAUDE.md")
   return join(cwd, "AGENTS.md")
-}
-
-/** Only touch agents that are actually installed. */
-export async function detectAgents(home: string): Promise<Agent[]> {
-  const found: Agent[] = []
-  for (const [dir, agent] of [
-    [".claude", "claude"],
-    [".cursor", "cursor"],
-  ] as const) {
-    // stat, not Bun.file().exists() — the latter reports false for directories.
-    const isDir = await stat(join(home, dir))
-      .then((s) => s.isDirectory())
-      .catch(() => false)
-    if (isDir) found.push(agent)
-  }
-  return found
 }
 
 async function read(path: string): Promise<string> {

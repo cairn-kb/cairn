@@ -6,6 +6,8 @@
 
 ### Added
 
+- `cairn init` now looks for Codex and Claude Desktop as well as Claude Code
+  and Cursor, and in a terminal shows which of the four it found.
 - `cairn search` now shows the top results on the terminal, with a count of
   how many more matched — pass `--json` to see all of them.
 - Documents can be marked as machine-generated and tagged with the repository

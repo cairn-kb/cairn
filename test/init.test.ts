@@ -126,6 +126,27 @@ test("detects both when both are present", async () => {
   expect((await detectAgents(home)).sort()).toEqual(["claude", "cursor"])
 })
 
+// detectAgents is re-exported from ./agents — these confirm the two extra
+// agents it added are reachable through init.ts, not just agents.ts directly.
+
+test("detects codex by its config directory, through init's re-export", async () => {
+  await mkdir(join(home, ".codex"))
+  expect(await detectAgents(home, "linux")).toEqual(["codex"])
+})
+
+test("detects claude desktop by the directory holding its config, through init's re-export", async () => {
+  await mkdir(join(home, ".config", "Claude"), { recursive: true })
+  expect(await detectAgents(home, "linux")).toEqual(["claude-desktop"])
+})
+
+test("detects all four together, in fixed order, through init's re-export", async () => {
+  await mkdir(join(home, ".claude"))
+  await mkdir(join(home, ".cursor"))
+  await mkdir(join(home, ".codex"))
+  await mkdir(join(home, ".config", "Claude"), { recursive: true })
+  expect(await detectAgents(home, "linux")).toEqual(["claude", "cursor", "codex", "claude-desktop"])
+})
+
 // --- runInit --------------------------------------------------------------
 
 test("writes mcp config and instructions for claude code", async () => {
