@@ -3,7 +3,7 @@
  * its files are documentation worth importing.
  */
 
-import { readdir, stat } from "node:fs/promises"
+import { lstat, readdir } from "node:fs/promises"
 import { basename, join, relative, sep } from "node:path"
 
 export interface RepoInfo {
@@ -45,19 +45,25 @@ function sanitise(name: string): string {
 
 /**
  * The origin remote's last path segment without `.git` — the same for
- * `git@host:org/name.git` and `https://host/org/name.git/` — or, with no
- * remote, the root directory's name. Anything outside `[A-Za-z0-9._-]`
+ * `git@host:org/name.git` and `https://host/org/name.git/`, ignoring any
+ * `?query` or `#fragment` — or, with no usable remote name, the root
+ * directory's name. Anything outside `[A-Za-z0-9._-]`
  * becomes `-`.
  */
 export function repoLabel(remoteUrl: string | null, root: string): string {
   const fromRemote = remoteUrl
     ?.trim()
+    .replace(/[?#].*$/, "")
     .replace(/\/+$/, "")
     .replace(/\.git$/, "")
     .split(/[/:]/)
     .pop()
-  const label = sanitise(fromRemote || basename(root))
-  return label === "" ? "repo" : label
+  return usable(sanitise(fromRemote ?? "")) ?? usable(sanitise(basename(root))) ?? "repo"
+}
+
+/** Null for a label that names nothing: empty, `.` or `..`. */
+function usable(label: string): string | null {
+  return label === "" || label === "." || label === ".." ? null : label
 }
 
 /** Path segments that hold dependencies, build output, caches or agent
@@ -132,9 +138,12 @@ export async function scanDocs(root: string, opts: { git?: boolean } = {}, run: 
   for (const rel of rels) {
     if (excluded(rel)) continue
     const path = join(root, ...rel.split("/"))
-    // A tracked file deleted from the work tree is still listed by git;
-    // stat skips it along with anything too large to be a document.
-    const s = await stat(path).catch(() => null)
+    // lstat, never stat: a `.md` symlink can point anywhere — `../.ssh/id_rsa`
+    // included — and whatever it reaches would be imported, into a shared
+    // space in team mode. Only regular files count, the same rule the walk
+    // applies. A tracked file deleted from the work tree is still listed by
+    // git; lstat skips it along with anything too large to be a document.
+    const s = await lstat(path).catch(() => null)
     if (s?.isFile() && s.size <= MAX_DOC_BYTES) kept.push(path)
   }
   return kept.sort()

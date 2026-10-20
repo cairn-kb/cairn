@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { findRepo, repoLabel, scanDocs, topFolders } from "../src/repo"
@@ -38,6 +38,20 @@ test("repoLabel falls back to the root's basename, sanitised", () => {
 
 test("repoLabel sanitises a remote's name too", () => {
   expect(repoLabel("https://host/org/my%20app+v2.git", "/x/y")).toBe("my-20app-v2")
+})
+
+test("repoLabel ignores a query or fragment on the remote", () => {
+  expect(repoLabel("https://host/org/app.git?ref=main", "/x/y")).toBe("app")
+  expect(repoLabel("https://host/org/app#readme", "/x/y")).toBe("app")
+  expect(repoLabel("https://host/org/app.git/?a=1#b", "/x/y")).toBe("app")
+})
+
+test("repoLabel treats a remote naming '.', '..' or nothing as missing", () => {
+  expect(repoLabel("https://host/org/..", "/x/My App")).toBe("My-App")
+  expect(repoLabel("https://host/org/.", "/x/My App")).toBe("My-App")
+  expect(repoLabel("../", "/x/My App")).toBe("My-App")
+  expect(repoLabel("?x=1#y", "/x/My App")).toBe("My-App")
+  expect(repoLabel(null, "/")).toBe("repo")
 })
 
 test("findRepo returns null when git finds nothing", async () => {
@@ -103,6 +117,39 @@ test("scanDocs in a git repository honours .gitignore and still sees untracked d
 test("scanDocs falls back to a walk outside a git repository", async () => {
   await put("README.md")
   expect(await scanDocs(dir)).toEqual([join(dir, "README.md")])
+})
+
+async function symlinkedDoc(): Promise<string> {
+  // A secret outside the scanned tree, reachable through a `.md` symlink inside it.
+  const outside = await realpath(await mkdtemp(join(tmpdir(), "cairn-outside-")))
+  await writeFile(join(outside, "id_rsa"), "PRIVATE KEY\n")
+  await symlink(join(outside, "id_rsa"), join(dir, "notes.md"))
+  await mkdir(join(dir, "docs"), { recursive: true })
+  await symlink(join(outside, "id_rsa"), join(dir, "docs", "key.md"))
+  return outside
+}
+
+test("scanDocs never follows a symlinked .md out of the tree (walk)", async () => {
+  await put("README.md")
+  const outside = await symlinkedDoc()
+  try {
+    expect(await scanDocs(dir, { git: false })).toEqual([join(dir, "README.md")])
+  } finally {
+    await rm(outside, { recursive: true, force: true })
+  }
+})
+
+test("scanDocs never follows a symlinked .md out of the tree (git, tracked and untracked)", async () => {
+  await git(["init", "-q"], dir)
+  await put("README.md")
+  const outside = await symlinkedDoc()
+  try {
+    // notes.md tracked, docs/key.md left untracked: both must be skipped.
+    await git(["add", "notes.md"], dir)
+    expect(await scanDocs(dir)).toEqual([join(dir, "README.md")])
+  } finally {
+    await rm(outside, { recursive: true, force: true })
+  }
 })
 
 test("topFolders groups by first segment, root files as '.', largest first", () => {
