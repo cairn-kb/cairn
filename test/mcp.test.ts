@@ -23,7 +23,8 @@ import {
 import { FileStore } from "../src/store"
 import type { Claim, CiteInput } from "@cairn-kb/protocol/types"
 import { VERSION } from "../src/version"
-import { SEARCH_GUIDANCE } from "../src/init"
+import { SEARCH_GUIDANCE } from "../src/guidance"
+import { staticSpecifiers } from "./import-graph"
 
 /** A `propose` argument bundle with every required field filled, for tests
  *  that only care about one field varying (here, `cites`). */
@@ -564,18 +565,32 @@ test("the server instructions tell an agent to search before answering, in the b
   expect(SEARCH_GUIDANCE).toContain("decisions, conventions, architecture or history")
 })
 
-test("the search description says when to search", async () => {
+test("the search description says what search holds", async () => {
   const store = new FileStore(root, log)
   await store.init()
   const client = await connected(store, log)
   const { tools } = await client.listTools()
   const description = tools.find((t) => t.name === "team_knowledge_search")!.description!
-  expect(description).toContain("before answering any question about the project's decisions, conventions, architecture or history")
-  expect(description).toContain("before relying on memory or guessing")
-  expect(description).toContain("duplicate")
+  expect(description).toContain(
+    "It covers the team's recorded decisions, conventions, architecture and history, so it is the " +
+      "source for questions about this project that memory alone can't settle, and it shows whether " +
+      "a claim you are about to propose already exists.",
+  )
+  // What it holds, not when to call it — that is SEARCH_GUIDANCE's job, sent
+  // as server instructions.
+  expect(description).not.toContain("Use it before")
   // What it already said stays.
   expect(description).toContain("two blocks in a fixed order")
   expect(description).toContain(GENERATED_NOTE)
+})
+
+test("the search guidance lives in a leaf module both init and the server import", async () => {
+  // A leaf, so the server does not load init's file-writing code to read one string.
+  expect(staticSpecifiers(await Bun.file(join(import.meta.dir, "..", "src", "guidance.ts")).text())).toEqual([])
+  const mcp = staticSpecifiers(await Bun.file(join(import.meta.dir, "..", "src", "mcp.ts")).text())
+  expect(mcp).toContain("./guidance")
+  expect(mcp).not.toContain("./init")
+  expect(staticSpecifiers(await Bun.file(join(import.meta.dir, "..", "src", "init.ts")).text())).toContain("./guidance")
 })
 
 test("the map description tells an agent what a missing abstract means", () => {
