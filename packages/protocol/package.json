@@ -17,6 +17,7 @@
     "./hash": "./src/hash.ts",
     "./document-title": "./src/document-title.ts",
     "./provenance": "./src/provenance.ts",
+    "./retrieval": "./src/retrieval.ts",
     "./package.json": "./package.json"
   },
   "files": ["src", "README.md", "LICENSE", "NOTICE"],

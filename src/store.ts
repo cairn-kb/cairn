@@ -15,7 +15,9 @@ import type {
   Document,
   DocumentInput,
   ImportDocumentResult,
+  PassageHit,
   ProposeInput,
+  SearchOptions,
   Status,
   Store,
 } from "@cairn-kb/protocol/types"
@@ -544,6 +546,10 @@ export class FileStore implements Store {
       .all(fts) as { id: string }[]
     const docs = await Promise.all(rows.map((r) => this.getDocument(r.id)))
     return docs.filter((d): d is Document => d !== null)
+  }
+
+  async searchPassages(_query: string, _opts?: SearchOptions): Promise<{ hits: PassageHit[]; notice?: string }> {
+    throw new Error("not implemented")
   }
 
   /**

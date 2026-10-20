@@ -247,6 +247,53 @@ export interface ImportDocumentResult {
 }
 
 /**
+ * A contiguous span of one document's text, the unit document search
+ * returns. Cut by `chunk` in `./retrieval`, identically on both tiers.
+ */
+export interface Passage {
+  /** The document's id. */
+  doc: string
+  /** 0-based position among the document's passages. */
+  ordinal: number
+  /**
+   * Where the span starts, as a JavaScript string index into
+   * `Document.text`: the same units a read's `offset` uses, so reading the
+   * document at this offset lands on the passage's first character.
+   */
+  offset: number
+  length: number
+  /** The heading breadcrumb, "Title › Section › Subsection". Not part of the span. */
+  heading: string
+  /** `hashText(passageText(text, passage))`: the embedding cache key. */
+  hash: string
+}
+
+/** A passage a search found, with what a reader needs from its document. */
+export interface PassageHit extends Passage {
+  title: string
+  source: string | null
+  /** The span itself, without the heading. */
+  text: string
+  /** The document's `generated` flag; a machine wrote this text. */
+  generated: boolean
+  repo: string | null
+}
+
+export interface SearchOptions {
+  limit?: number
+  /** `false` forces keyword-only ranking even when an embedder is available. */
+  semantic?: boolean
+}
+
+/** Turns text into vectors for semantic search. */
+export interface Embedder {
+  /** The model's name; a vector is only comparable with others from the same model. */
+  model: string
+  dims: number
+  embed(texts: string[], signal?: AbortSignal): Promise<Float32Array[]>
+}
+
+/**
  * The seam. Local files implement it, and so does the hosted service. Async
  * despite bun:sqlite being synchronous — a remote implementation cannot be
  * sync.
@@ -271,7 +318,7 @@ export interface Store {
    *  a hardcoded one recorded a human curating what a model had written. */
   put(claim: Claim, kind: PatchKind): Promise<void>
   move(id: string, status: Status): Promise<void>
-  search(query: string): Promise<Claim[]>
+  search(query: string, opts?: SearchOptions): Promise<Claim[]>
   /**
    * Create a claim and return it. The STORE owns the id: the hosted
    * implementation has the server assign one, so a caller cannot know it in
@@ -416,6 +463,13 @@ export interface Store {
    * we know", which is the exact confusion a document exists to avoid.
    */
   searchDocuments(query: string): Promise<Document[]>
+  /**
+   * Passages of documents matching a question, best first, at most a
+   * couple per document. `notice` says why the ranking is not what the
+   * caller asked for, for example that semantic search was unavailable and
+   * the hits are keyword-only.
+   */
+  searchPassages(query: string, opts?: SearchOptions): Promise<{ hits: PassageHit[]; notice?: string }>
   /**
    * Seed or refresh a document from a file. The three-state outcome —
    * created, updated, unchanged — is what lets `cairn import` say what it

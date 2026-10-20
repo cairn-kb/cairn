@@ -50,6 +50,7 @@ function fakeStore(over: Partial<Store>): Store {
     listDocuments: async () => [],
     getDocument: async () => unsupported("getDocument"),
     searchDocuments: async () => unsupported("searchDocuments"),
+    searchPassages: async () => unsupported("searchPassages"),
     importDocument: async () => unsupported("importDocument"),
     adoptImport: async () => unsupported("adoptImport"),
     ...over,

@@ -24,7 +24,9 @@ import type {
   Document,
   DocumentInput,
   ImportDocumentResult,
+  PassageHit,
   ProposeInput,
+  SearchOptions,
   Status,
   Store,
 } from "@cairn-kb/protocol/types"
@@ -318,6 +320,10 @@ export class HttpStore implements Store {
     if (fts === null) return []
     const r: { documents: Document[] } = await this.call(`/documents?q=${encodeURIComponent(fts)}`)
     return r.documents
+  }
+
+  async searchPassages(_query: string, _opts?: SearchOptions): Promise<{ hits: PassageHit[]; notice?: string }> {
+    throw new Error("not implemented")
   }
 
   async importDocument(input: DocumentInput): Promise<ImportDocumentResult> {

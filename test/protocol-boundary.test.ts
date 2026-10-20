@@ -12,7 +12,7 @@ test("the protocol imports nothing but itself", () => {
   const files = readdirSync(PROTOCOL).filter((f) => f.endsWith(".ts"))
   expect(files.sort()).toEqual([
     "absence.ts", "document-title.ts", "event-kinds.ts", "hash.ts",
-    "provenance.ts", "stats.ts", "types.ts",
+    "provenance.ts", "retrieval.ts", "stats.ts", "types.ts",
   ])
   const outside = files.flatMap((f) =>
     staticSpecifiers(readFileSync(join(PROTOCOL, f), "utf-8"))
