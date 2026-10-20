@@ -21,6 +21,10 @@
   search, reads and `cairn show`.
 - `cairn init` checks that each agent it configured can actually start
   cairn, and names the fix when one cannot.
+- With telemetry on, cairn reports once how long it took from finishing
+  `cairn init` to your agent's first search that found something, as a
+  bucket (`<5m`, `5–10m`, `10–30m`, `>30m`, `never`) rather than a raw
+  duration; the consent screen shows it.
 
 ### Fixed
 

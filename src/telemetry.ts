@@ -1,5 +1,8 @@
-import { readConfig, writeConfig } from "./config"
+import { newConfig, readConfig, writeConfig } from "./config"
 import type { CairnConfig } from "./config"
+import { firstAnswerBucket } from "./first-answer-metric"
+import type { FirstAnswer } from "./first-answer-metric"
+import { VERSION } from "./version"
 import type { Stats } from "@cairn-kb/protocol/stats"
 
 /**
@@ -42,6 +45,14 @@ export interface TelemetryPayload {
   sessions: number
   pendingAgeDays: number | null
   generatedAbstracts: number
+  /**
+   * How long it took this install from `init` finishing to an agent's first
+   * useful search, as one bucket — never a raw duration, and never sent as
+   * `null`. Absent whenever there is no bucket to report yet; the hosted
+   * endpoint's schema accepts this field only as optional, so it must be
+   * omitted rather than nulled.
+   */
+  firstAnswer?: FirstAnswer
 }
 
 export function buildPayload(
@@ -49,7 +60,9 @@ export function buildPayload(
   stats: Stats,
   version: string,
   platform: string,
+  now: number = Date.now(),
 ): TelemetryPayload {
+  const bucket = firstAnswerBucket(config, now)
   return {
     install: config.installId,
     version,
@@ -61,7 +74,34 @@ export function buildPayload(
     sessions: stats.sessions,
     pendingAgeDays: stats.pendingAgeDays,
     generatedAbstracts: stats.generatedAbstracts,
+    ...(bucket !== null ? { firstAnswer: bucket } : {}),
   }
+}
+
+/**
+ * Exactly what the consent screen shows — built with `buildPayload`, from a
+ * sample config and zero stats, never hand-written: a field added to the
+ * wire that is not named here cannot reach a user's eyes before it reaches
+ * the endpoint, because this is the same function call that builds the real
+ * payload. The sample's `firstAnswer` is `"5–10m"`, so the field appears on
+ * the screen it is meant to demonstrate rather than only on the installs that
+ * happen to hit it.
+ */
+export function consentPreview(): string {
+  const sampleUuid = "a3f00000-0000-0000-0000-000000000000"
+  const sample: CairnConfig = {
+    ...newConfig(true, sampleUuid),
+    installId: `${sampleUuid.slice(0, 3)}…`,
+    initCompletedAt: new Date(0).toISOString(),
+    firstAnswerAt: new Date(7 * 60_000).toISOString(),
+  }
+  const zeroStats: Stats = {
+    proposed: 0, approved: 0, edited: 0, rejected: 0, approveRate: null,
+    reads: 0, deniedReads: 0, searches: 0, sessions: 0,
+    pendingAgeDays: null, generatedAbstracts: 0,
+  }
+  const payload = buildPayload(sample, zeroStats, VERSION, `${process.platform}-${process.arch}`)
+  return `${JSON.stringify(payload)}\nNo claim text, no repo names, no paths.`
 }
 
 /**
@@ -128,7 +168,7 @@ export async function sendTelemetry(deps: TelemetryDeps): Promise<TelemetryOutco
     const config = await readConfig(deps.root)
     if (!config || !dueToSend(config, now)) return "skipped"
 
-    const payload = buildPayload(config, await deps.stats(), deps.version, deps.platform)
+    const payload = buildPayload(config, await deps.stats(), deps.version, deps.platform, now)
     const url = deps.env?.CAIRN_TELEMETRY_URL ?? TELEMETRY_URL
     const doFetch = deps.fetchImpl ?? fetch
     const res = await doFetch(url, {
@@ -138,7 +178,14 @@ export async function sendTelemetry(deps: TelemetryDeps): Promise<TelemetryOutco
       signal: AbortSignal.timeout(deps.timeoutMs ?? TIMEOUT_MS),
     })
     if (!res.ok) return "failed"
-    await writeConfig(deps.root, { ...config, lastSentAt: new Date(now).toISOString() })
+    await writeConfig(deps.root, {
+      ...config,
+      lastSentAt: new Date(now).toISOString(),
+      // Only when the sent payload actually carried the bucket — this is
+      // what makes the report go out exactly once, rather than retried
+      // forever or marked done before it was ever said.
+      firstAnswerReported: config.firstAnswerReported || payload.firstAnswer !== undefined,
+    })
     return "sent"
   } catch {
     // Deliberately total. Anything that reaches here — an unreadable event

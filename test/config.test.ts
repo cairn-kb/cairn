@@ -186,3 +186,41 @@ test("a mode that is not one of the two reads as team", async () => {
 test("newConfig defaults to team when no mode is given", () => {
   expect(newConfig(false).mode).toBe("team")
 })
+
+// --- the first-answer metric -------------------------------------------
+
+test("a fresh config has no first-answer metric yet", () => {
+  const cfg = newConfig(true, "abc")
+  expect(cfg.initCompletedAt).toBeNull()
+  expect(cfg.firstAnswerAt).toBeNull()
+  expect(cfg.firstAnswerReported).toBe(false)
+})
+
+test("the first-answer metric round trips through disk", async () => {
+  const cfg = {
+    ...newConfig(true, "abc"),
+    initCompletedAt: "2026-10-19T12:00:00.000Z",
+    firstAnswerAt: "2026-10-19T12:07:00.000Z",
+    firstAnswerReported: true,
+  }
+  await writeConfig(root, cfg)
+  expect(await readConfig(root)).toEqual(cfg)
+})
+
+test("unparseable first-answer metric values read as defaults", async () => {
+  await writeFile(
+    join(root, "config.json"),
+    JSON.stringify({
+      installId: "a",
+      telemetry: false,
+      initCompletedAt: 1234,
+      firstAnswerAt: {},
+      firstAnswerReported: "yes",
+    }),
+    "utf-8",
+  )
+  const cfg = await readConfig(root)
+  expect(cfg?.initCompletedAt).toBeNull()
+  expect(cfg?.firstAnswerAt).toBeNull()
+  expect(cfg?.firstAnswerReported).toBe(false)
+})

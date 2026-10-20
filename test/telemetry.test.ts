@@ -4,7 +4,15 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { newConfig, readConfig, writeConfig } from "../src/config"
 import type { Stats } from "@cairn-kb/protocol/stats"
-import { buildPayload, dueToSend, sendTelemetry, trackingDisabled, TELEMETRY_URL, WRITE_KEY } from "../src/telemetry"
+import {
+  buildPayload,
+  consentPreview,
+  dueToSend,
+  sendTelemetry,
+  trackingDisabled,
+  TELEMETRY_URL,
+  WRITE_KEY,
+} from "../src/telemetry"
 
 let root: string
 
@@ -209,4 +217,83 @@ test("DO_NOT_TRACK=1 silences a consented install without touching consent", asy
   expect(outcome).toBe("skipped")
   expect(calls).toBe(0)
   expect((await readConfig(root))!.telemetry).toBe(true)
+})
+
+// --- the first-answer bucket on the wire --------------------------------
+
+const MIN = 60_000
+const T = Date.parse("2026-09-02T00:00:00.000Z")
+
+test("buildPayload carries firstAnswer only when a bucket applies", () => {
+  const withBucket = {
+    ...newConfig(true),
+    initCompletedAt: new Date(T).toISOString(),
+    firstAnswerAt: new Date(T + 7 * MIN).toISOString(),
+  }
+  expect(buildPayload(withBucket, stats(), "0.4.3", "darwin-arm64").firstAnswer).toBe("5–10m")
+
+  const withoutBucket = { ...newConfig(true), initCompletedAt: null, firstAnswerAt: null }
+  const payload = buildPayload(withoutBucket, stats(), "0.4.3", "darwin-arm64")
+  expect("firstAnswer" in payload).toBe(false)
+})
+
+test("a successful send with a bucket marks firstAnswerReported, once", async () => {
+  await writeConfig(root, {
+    ...newConfig(true),
+    initCompletedAt: new Date(T).toISOString(),
+    firstAnswerAt: new Date(T + 7 * MIN).toISOString(),
+  })
+  const outcome = await sendTelemetry({
+    root, version: "0.4.3", platform: "darwin-arm64", stats: async () => stats(),
+    now: T,
+    fetchImpl: async () => new Response("{}", { status: 200 }),
+  })
+  expect(outcome).toBe("sent")
+  expect((await readConfig(root))!.firstAnswerReported).toBe(true)
+})
+
+test("a successful send with no bucket leaves firstAnswerReported false", async () => {
+  await writeConfig(root, { ...newConfig(true), initCompletedAt: null, firstAnswerAt: null })
+  const outcome = await sendTelemetry({
+    root, version: "0.4.3", platform: "darwin-arm64", stats: async () => stats(),
+    fetchImpl: async () => new Response("{}", { status: 200 }),
+  })
+  expect(outcome).toBe("sent")
+  expect((await readConfig(root))!.firstAnswerReported).toBe(false)
+})
+
+test("a failed send never marks firstAnswerReported", async () => {
+  await writeConfig(root, {
+    ...newConfig(true),
+    initCompletedAt: new Date(T).toISOString(),
+    firstAnswerAt: new Date(T + 7 * MIN).toISOString(),
+  })
+  const outcome = await sendTelemetry({
+    root, version: "0.4.3", platform: "darwin-arm64", stats: async () => stats(),
+    fetchImpl: async () => new Response("nope", { status: 500 }),
+  })
+  expect(outcome).toBe("failed")
+  expect((await readConfig(root))!.firstAnswerReported).toBe(false)
+})
+
+// --- the consent screen renders the real payload -------------------------
+
+test("consentPreview carries exactly the keys buildPayload would send, firstAnswer included", () => {
+  const preview = consentPreview()
+  const [json] = preview.split("\n")
+  const parsed = JSON.parse(json!) as Record<string, unknown>
+
+  const sample = {
+    ...newConfig(true),
+    initCompletedAt: new Date(T).toISOString(),
+    firstAnswerAt: new Date(T + 7 * MIN).toISOString(),
+  }
+  const wire = buildPayload(sample, stats({ proposed: 0, approved: 0, rejected: 0, reads: 0, sessions: 0, pendingAgeDays: null, generatedAbstracts: 0 }), "x", "y")
+
+  expect(Object.keys(parsed).sort()).toEqual(Object.keys(wire).sort())
+  expect(parsed.firstAnswer).toBe("5–10m")
+})
+
+test("consentPreview states plainly what is never collected", () => {
+  expect(consentPreview()).toContain("No claim text, no repo names, no paths.")
 })

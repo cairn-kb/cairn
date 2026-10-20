@@ -1123,3 +1123,15 @@ test("team_knowledge_search still returns hits when onSearchResult throws synchr
   expect(parsed.hits.length).toBe(1)
   await client.close()
 })
+
+test("createTools(...).kbSearch alone never calls onSearchResult — only the server handler can", async () => {
+  // `init`'s own demonstration search (src/first-answer.ts) calls kbSearch
+  // this way, bypassing the server entirely, which is the whole reason it can
+  // never count toward the first-answer metric.
+  await store.importDocument({ title: "d", text: "Quetzalcoatl", source: "d.md" })
+  const seen: number[] = []
+  const t = createTools(store, log)
+  const result = await t.kbSearch("Quetzalcoatl")
+  expect(result.hits.length).toBe(1)
+  expect(seen).toEqual([])
+})

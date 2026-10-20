@@ -315,7 +315,10 @@ space, migrating a local root's claims across as described above.
 With consent, cairn sends at most one ping a day: an install id (not tied to
 you), the cairn version and platform, and counts — proposed, approved,
 rejected, reads, sessions, the age in days of the oldest pending claim, and
-how many abstracts are machine-generated. Nothing is sent before you say yes —
+how many abstracts are machine-generated. It also reports, once, how long it
+took from finishing `cairn init` to your agent's first search that found
+something, as one of a small set of buckets (`<5m`, `5–10m`, `10–30m`,
+`>30m`, `never`) rather than a raw duration. Nothing is sent before you say yes —
 the consent screen at `cairn init` shows an example of the exact JSON first
 (`--telemetry` and `cairn telemetry on` consent without it) — and nothing it
 sends can identify a claim, a document, or what either one says. Pings go to
