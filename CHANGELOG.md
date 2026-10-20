@@ -11,6 +11,9 @@
 
 ### Changed
 
+- `cairn init`'s import step is one question — Yes, Choose folders or Skip —
+  shows progress while it imports and ends with a short summary; in a team
+  space it sends several documents at once.
 - `cairn init` no longer configures Claude Desktop unless asked with
   `--agents claude-desktop`, which is what `cairn doctor` now suggests on a
   machine where Claude Desktop is the only agent installed.

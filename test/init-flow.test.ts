@@ -4,7 +4,14 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { desktopConfigPath } from "../src/agents"
-import { OTHER_OUTRO, runInitCommand, teamImportMessage, type InitCommandDeps } from "../src/cli"
+import {
+  fillSummaryLines,
+  importQuestion,
+  OTHER_OUTRO,
+  runInitCommand,
+  teamImportMessage,
+  type InitCommandDeps,
+} from "../src/cli"
 import { newConfig, readConfig, writeConfig, type AuthConfig } from "../src/config"
 import { EXPECTED_TOOLS } from "../src/doctor"
 import { EventLog } from "../src/events"
@@ -488,8 +495,8 @@ test("a document that cannot be imported is reported, and init still reaches its
   }
   const outcome = await runInitCommand(await deps({ openStore: refusing }))
   expect(outcome).toBe("written")
-  expect(said()).toContain(`could not import ${join(repoRoot, "docs", "testing.md")}: disk on fire`)
-  expect(said()).toContain("imported 3 documents from app — 1 could not be imported")
+  expect(said()).toContain("imported 3 documents from app — 3 new; 1 could not be imported")
+  expect(said()).toContain(`could not import ${join("docs", "testing.md")}: disk on fire`)
   expect(await docCount()).toBe(3)
   expect(said()).toContain("First answer")
   expect(said()).toContain("Restart your agent, then run `cairn doctor`")
@@ -854,4 +861,315 @@ test("Claude Code's failed proof still prints the code-scan prompt but offers no
   expect(outcome).toBe("written")
   expect(said()).toContain("map this repo for cairn (repo: app)")
   expect(launched).toEqual([])
+})
+
+// --- one import question ------------------------------------------------------
+
+type Ask = Parameters<NonNullable<InitCommandDeps["askImport"]>>[0]
+
+/** Deps that record every import-step prompt, answering the question with `answer`. */
+function asking(answer: "yes" | "choose" | "skip" | null, over: Partial<InitCommandDeps> = {}) {
+  const calls: string[] = []
+  const asked: Ask[] = []
+  const prompts: Partial<InitCommandDeps> = {
+    askImport: async (q) => {
+      asked.push(q)
+      return answer
+    },
+    confirmWrite: async (what) => {
+      calls.push(`confirmWrite:${what}`)
+      return true
+    },
+    confirmTeamImport: async () => {
+      calls.push("confirmTeamImport")
+      return true
+    },
+    selectFolders: async (folders) => {
+      calls.push("selectFolders")
+      return folders.map((f) => f.folder)
+    },
+    addFolder: async () => {
+      calls.push("addFolder")
+      return null
+    },
+    ...over,
+  }
+  return { calls, asked, prompts }
+}
+
+test("the import question gets the count, label, folders and no space locally", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const { asked, prompts } = asking("yes")
+  await runInitCommand(await deps(prompts))
+  expect(asked).toEqual([
+    {
+      n: 4,
+      label: "app",
+      folders: [
+        { folder: "docs", count: 2 },
+        { folder: ".", count: 1, readme: true },
+        { folder: "adr", count: 1 },
+      ],
+      space: null,
+    },
+  ])
+})
+
+test("team: the import question names the space", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const { asked, prompts } = asking("yes", { resolveMode: async () => "team" })
+  await runInitCommand(await deps(prompts))
+  expect(asked.map((q) => q.space)).toEqual(["acme"])
+})
+
+test("yes imports everything with no other import prompt", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const { calls, prompts } = asking("yes")
+  expect(await runInitCommand(await deps(prompts))).toBe("written")
+  // The config's own confirmation is the only one left.
+  expect(calls).toEqual(["confirmWrite:Write these files?"])
+  expect(await docCount()).toBe(4)
+  expect(said()).toContain("imported 4 documents from app — 4 new")
+  expect(said()).toContain("First answer")
+})
+
+test("team: yes imports with no separate visibility confirmation", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const { calls, prompts } = asking("yes", { resolveMode: async () => "team" })
+  await runInitCommand(await deps(prompts))
+  expect(calls).toEqual(["confirmWrite:Write these files?"])
+  expect(await docCount()).toBe(4)
+})
+
+test("choose asks for folders, then more, and imports only those", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const { calls, prompts } = asking("choose", {
+    selectFolders: async () => {
+      calls.push("selectFolders")
+      return ["docs", "adr"]
+    },
+  })
+  await runInitCommand(await deps(prompts))
+  expect(calls).toEqual(["confirmWrite:Write these files?", "selectFolders", "addFolder"])
+  const docs = await (await storeAt(root)).listDocuments()
+  expect(docs.map((d) => d.title).sort()).toEqual(["Deploying the API", "Storage decision", "Testing strategy"])
+})
+
+test("choose, then cancelling the folder list, imports nothing", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const { prompts } = asking("choose", { selectFolders: async () => null })
+  await runInitCommand(await deps(prompts))
+  expect(await docCount()).toBe(0)
+  expect(said()).toContain("Nothing was imported.")
+})
+
+for (const answer of ["skip", null] as const) {
+  test(`${answer === null ? "cancelling" : "skip"} imports nothing`, async () => {
+    await writeDocs(repoRoot, FOUR)
+    const { calls, prompts } = asking(answer)
+    expect(await runInitCommand(await deps(prompts))).toBe("written")
+    expect(calls).toEqual(["confirmWrite:Write these files?"])
+    expect(await docCount()).toBe(0)
+    expect(said()).toContain("Nothing was imported.")
+    expect(said()).not.toContain("First answer")
+  })
+}
+
+test("with no documents in the repository, the question is not asked and folders are", async () => {
+  const { calls, asked, prompts } = asking("yes")
+  await runInitCommand(await deps(prompts))
+  expect(asked).toEqual([])
+  expect(calls).toContain("addFolder")
+})
+
+test("too few documents: yes still confirms the skill files before writing them", async () => {
+  await writeDocs(repoRoot, { "README.md": "# app\n\nhi\n" })
+  const { calls, prompts } = asking("yes")
+  await runInitCommand(await deps(prompts))
+  expect(calls).toEqual(["confirmWrite:Write these files?", "confirmWrite:Write the skill files?"])
+  expect(await docCount()).toBe(1)
+  expect(existsSync(join(repoRoot, ".claude", "skills", "cairn-import", "SKILL.md"))).toBe(true)
+})
+
+test("too few documents: declining the skill files still imports the documents", async () => {
+  await writeDocs(repoRoot, { "README.md": "# app\n\nhi\n" })
+  const { prompts } = asking("yes", { confirmWrite: async (what) => what === "Write these files?" })
+  await runInitCommand(await deps(prompts))
+  expect(await docCount()).toBe(1)
+  expect(existsSync(join(repoRoot, ".claude", "skills"))).toBe(false)
+  expect(said()).not.toContain("map this repo for cairn")
+})
+
+test("importQuestion, locally", () => {
+  expect(
+    importQuestion(42, "acme/app", [{ folder: ".", count: 20, readme: true }, { folder: "docs", count: 15 }, { folder: "adr", count: 7 }], null),
+  ).toBe("Import 42 documents from acme/app (README, docs/, adr/)?")
+})
+
+test("importQuestion, in a team space", () => {
+  expect(importQuestion(3, "app", [{ folder: "docs", count: 3 }], "acme")).toBe(
+    "Import 3 documents from app (docs/)? Everyone in acme will see them.",
+  )
+})
+
+test("importQuestion shows three folders, then an ellipsis", () => {
+  expect(
+    importQuestion(
+      10,
+      "app",
+      [
+        { folder: "docs", count: 4 },
+        { folder: "adr", count: 3 },
+        { folder: ".", count: 2 },
+        { folder: "notes", count: 1 },
+      ],
+      null,
+    ),
+  ).toBe("Import 10 documents from app (docs/, adr/, top level, …)?")
+})
+
+test("importQuestion calls the top level README only when it holds one", () => {
+  expect(importQuestion(1, "app", [{ folder: ".", count: 1, readme: true }], null)).toBe("Import 1 document from app (README)?")
+  expect(importQuestion(2, "app", [{ folder: ".", count: 2, readme: false }], null)).toBe(
+    "Import 2 documents from app (top level)?",
+  )
+})
+
+// --- progress -------------------------------------------------------------------
+
+function recorder() {
+  const events: string[] = []
+  return {
+    events,
+    progress: (total: number) => {
+      events.push(`start ${total}`)
+      return { tick: (done: number, t: number) => events.push(`${done}/${t}`), stop: () => events.push("stop") }
+    },
+  }
+}
+
+test("progress ticks to the total and stops", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const { events, progress } = recorder()
+  await runInitCommand(await deps({ progress }))
+  expect(events).toEqual(["start 4", "1/4", "2/4", "3/4", "4/4", "stop"])
+})
+
+test("progress stops when an import throws", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const { events, progress } = recorder()
+  const refusing = async (r: string): Promise<Store> => {
+    const s = await storeAt(r)
+    return new Proxy(s, {
+      get(target, prop, receiver) {
+        if (prop === "importDocument") {
+          return async () => {
+            throw new Error("disk on fire")
+          }
+        }
+        const v = Reflect.get(target, prop, receiver)
+        return typeof v === "function" ? v.bind(target) : v
+      },
+    }) as Store
+  }
+  await runInitCommand(await deps({ progress, openStore: refusing }))
+  expect(events).toEqual(["start 4", "1/4", "2/4", "3/4", "4/4", "stop"])
+})
+
+test("progress stops even when the import step itself fails", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const events: string[] = []
+  const progress = () => ({
+    tick: () => {
+      throw new Error("terminal gone")
+    },
+    stop: () => events.push("stop"),
+  })
+  await expect(runInitCommand(await deps({ progress }))).rejects.toThrow("terminal gone")
+  expect(events).toEqual(["stop"])
+})
+
+// --- batched team imports -------------------------------------------------------
+
+/** A store that counts how many imports are in flight at once. */
+function counting(): { open: (r: string) => Promise<Store>; most: () => number } {
+  let inFlight = 0
+  let most = 0
+  return {
+    most: () => most,
+    open: async (r) => {
+      const s = await storeAt(r)
+      return new Proxy(s, {
+        get(target, prop, receiver) {
+          if (prop === "importDocument") {
+            return async (input: never) => {
+              most = Math.max(most, ++inFlight)
+              await new Promise((res) => setTimeout(res, 5))
+              try {
+                return await target.importDocument(input)
+              } finally {
+                inFlight--
+              }
+            }
+          }
+          const v = Reflect.get(target, prop, receiver)
+          return typeof v === "function" ? v.bind(target) : v
+        },
+      }) as Store
+    },
+  }
+}
+
+test("team: several documents are sent at once", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const store = counting()
+  await runInitCommand(await deps({ resolveMode: async () => "team", openStore: store.open }))
+  expect(store.most()).toBe(4)
+  expect(await docCount()).toBe(4)
+})
+
+test("local: documents are imported one at a time", async () => {
+  await writeDocs(repoRoot, FOUR)
+  const store = counting()
+  await runInitCommand(await deps({ openStore: store.open }))
+  expect(store.most()).toBe(1)
+})
+
+// --- the summary ----------------------------------------------------------------
+
+const RESULT = { created: 0, updated: 0, unchanged: 0, empty: [] as string[], cited: [], titles: [] as string[], failed: [] as { path: string; error: string }[] }
+
+test("fillSummaryLines: all new", () => {
+  expect(fillSummaryLines({ ...RESULT, created: 4, titles: ["a", "b", "c", "d"] }, "app", "/r")).toEqual([
+    "imported 4 documents from app — 4 new",
+  ])
+})
+
+test("fillSummaryLines: mixed, with the zero parts dropped", () => {
+  expect(
+    fillSummaryLines(
+      { ...RESULT, created: 2, unchanged: 1, titles: ["a", "b", "c"], empty: ["/r/e.md"], failed: [{ path: "/r/docs/x.md", error: "nope" }] },
+      "app",
+      "/r",
+    ),
+  ).toEqual([
+    "imported 3 documents from app — 2 new, 1 unchanged; 1 empty skipped; 1 could not be imported",
+    "could not import docs/x.md: nope",
+  ])
+  expect(fillSummaryLines({ ...RESULT, updated: 1, titles: ["a"] }, "app", "/r")).toEqual([
+    "imported 1 document from app — 1 updated",
+  ])
+})
+
+test("fillSummaryLines: seven failures show five, then how many more", () => {
+  const failed = Array.from({ length: 7 }, (_, i) => ({ path: `/r/f${i}.md`, error: "bad" }))
+  expect(fillSummaryLines({ ...RESULT, failed }, "app", "/r")).toEqual([
+    "imported 0 documents from app; 7 could not be imported",
+    "could not import f0.md: bad",
+    "could not import f1.md: bad",
+    "could not import f2.md: bad",
+    "could not import f3.md: bad",
+    "could not import f4.md: bad",
+    "…and 2 more",
+  ])
 })

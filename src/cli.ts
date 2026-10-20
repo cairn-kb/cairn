@@ -2,7 +2,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { readdir } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
-import { isAbsolute, join, relative, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import type { EventSink, Stats } from "./events"
 import { createMcpServer, DEFAULT_SEARCH_LIMIT } from "./mcp"
 import { ABSENCE_FRAMING } from "@cairn-kb/protocol/absence"
@@ -13,7 +13,7 @@ import { runDoctor, spawnHandshake } from "./doctor"
 import { applyInit, planInit, type InitPlan, type McpServerEntry, type Scope } from "./init"
 import { AGENT_LABEL, detectAgents, formatAgents, INIT_AGENTS, parseAgentsFlag, type Agent } from "./agents"
 import { findRepo, repoLabel, scanDocs, topFolders, type RepoInfo } from "./repo"
-import { applyFill, CODE_SCAN_THRESHOLD, planFill, type FillPlan } from "./fill"
+import { applyFill, CODE_SCAN_THRESHOLD, planFill, type FillFailure, type FillPlan } from "./fill"
 import { codeScanPrompt } from "./import-skill"
 import { firstAnswer, suggestQuestion } from "./first-answer"
 import { proveAgents, RESTART_NOTE, UNOBSERVABLE, type AgentProof } from "./prove"
@@ -472,12 +472,29 @@ export interface InitCommandDeps {
   /** Asked before the config is written and again before the fill writes
    *  anything. False or null both mean "don't". */
   confirmWrite?: (what: string) => Promise<boolean | null>
+  /**
+   * The one import question, asked when the repository has documents: import
+   * them all, choose folders, or skip. Render it with `importQuestion`. `space`
+   * is the team space everyone will see them in, null locally. Null means
+   * cancelled, which imports nothing. When absent, the folder list, the
+   * preview and its confirmations are asked instead.
+   */
+  askImport?: (q: {
+    n: number
+    label: string
+    folders: ImportFolder[]
+    space: string | null
+  }) => Promise<"yes" | "choose" | "skip" | null>
+  /** Shows the import's progress: started with the file count, ticked as each
+   *  file lands, always stopped. Absent, the import runs silently. */
+  progress?: (total: number) => { tick(done: number, total: number): void; stop(): void }
   /** Which of the repository's top folders to import from. Null skips the import. */
   selectFolders?: (folders: { folder: string; count: number }[]) => Promise<string[] | null>
   /** One more folder to import from; null (or blank) stops asking. */
   addFolder?: () => Promise<string | null>
   /** Confirms importing `n` documents into the team space `space`. Render it
-   *  with `teamImportMessage`. */
+   *  with `teamImportMessage`. Only on the step-by-step path: `askImport`'s
+   *  question already says who will see them. */
   confirmTeamImport?: (n: number, space: string) => Promise<boolean | null>
   /** The `cairn login` flow, run when team mode is chosen with no session. */
   signIn?: () => Promise<AuthConfig>
@@ -515,6 +532,58 @@ export const INIT_OUTRO_UNPROVEN =
 /** The team-mode fill confirmation, word for word. */
 export function teamImportMessage(n: number, space: string): string {
   return `these ${n} documents will be visible to everyone in ${space}`
+}
+
+/** A top folder of the import and how many documents it holds; `readme`
+ *  marks a top level that holds the repository's README. */
+export type ImportFolder = { folder: string; count: number; readme?: boolean }
+
+/**
+ * The import question, word for word: the count, the repository, and the
+ * three biggest folders so the person can tell at a glance whether this is
+ * the documentation they meant. In a team space it says who will see it —
+ * the question is the consent, so it has to carry the consequence.
+ */
+export function importQuestion(n: number, label: string, folders: ImportFolder[], space: string | null): string {
+  const names = folders
+    .slice(0, 3)
+    .map(({ folder, readme }) => (folder === "." ? (readme ? "README" : "top level") : `${folder}/`))
+  if (folders.length > 3) names.push("…")
+  const where = names.length > 0 ? ` (${names.join(", ")})` : ""
+  const who = space === null ? "" : ` Everyone in ${space} will see them.`
+  return `Import ${plural(n, "document")} from ${label}${where}?${who}`
+}
+
+/** How many failures the summary names before it only counts the rest. */
+const SUMMARY_FAILURES = 5
+
+/**
+ * What an import did, in one line, then the files that failed — a few named,
+ * the rest counted, so a large import with a systematic failure does not
+ * bury the first answer under hundreds of identical lines. Parts that are
+ * zero are left out: "0 updated, 0 unchanged" is noise on a first run.
+ */
+export function fillSummaryLines(
+  result: ImportSummary & { titles: string[]; failed: FillFailure[] },
+  label: string,
+  root: string,
+): string[] {
+  const kinds = [
+    [result.created, "new"],
+    [result.updated, "updated"],
+    [result.unchanged, "unchanged"],
+  ] as const
+  const counted = kinds.filter(([n]) => n > 0).map(([n, word]) => `${n} ${word}`)
+  let line = `imported ${plural(result.titles.length, "document")} from ${label}`
+  if (counted.length > 0) line += ` — ${counted.join(", ")}`
+  if (result.empty.length > 0) line += `; ${result.empty.length} empty skipped`
+  if (result.failed.length > 0) line += `; ${result.failed.length} could not be imported`
+  const lines = [line]
+  for (const { path, error } of result.failed.slice(0, SUMMARY_FAILURES)) {
+    lines.push(`could not import ${relative(root, path)}: ${error}`)
+  }
+  if (result.failed.length > SUMMARY_FAILURES) lines.push(`…and ${result.failed.length - SUMMARY_FAILURES} more`)
+  return lines
 }
 
 /** What to say when no agent init offers is installed. */
@@ -866,10 +935,14 @@ function printFillPreview(d: InitCommandDeps, fill: FillPlan, verb: "Will" | "Wo
   for (const { folder, count } of topFolders(fill.repo.root, fill.files).slice(0, 5)) {
     d.out(`  ${ui.skip(`${folder === "." ? "(top level)" : `${folder}/`} ${ui.dim(String(count))}`)}`)
   }
-  if (fill.skills.length > 0) {
-    d.out(`${ui.bold(`${verb ?? "Would"} write`)} the cairn-import skill, so your agent can map the code:`)
-    for (const skill of fill.skills) d.out(`  ${ui.skip(ui.dim(skill.path))}`)
-  }
+  printSkillPreview(d, fill, verb)
+}
+
+/** Every skill file the fill would write, before it does. */
+function printSkillPreview(d: InitCommandDeps, fill: FillPlan, verb: "Will" | "Would" | null): void {
+  if (fill.skills.length === 0) return
+  d.out(`${ui.bold(`${verb ?? "Would"} write`)} the cairn-import skill, so your agent can map the code:`)
+  for (const skill of fill.skills) d.out(`  ${ui.skip(ui.dim(skill.path))}`)
 }
 
 /** Read each agent's cairn entry back from disk and start it, the way the
@@ -899,10 +972,27 @@ function isInside(root: string, dir: string): boolean {
 
 const CONSOLE_IMPORT = "To bring in more, use the console's Import."
 
+/** How many imports a team-space fill sends at once. Each is a round trip to
+ *  the hosted service, which has no bulk route; four at once cuts the wait
+ *  without flooding it. */
+const TEAM_IMPORT_CONCURRENCY = 4
+
+/** The repository's top folders, with the top level marked when it holds the
+ *  README — the file a person recognises their repository by. */
+function importFolders(root: string, files: string[]): ImportFolder[] {
+  const readme = files.some((f) => dirname(f) === root && /^readme(\.md)?$/i.test(basename(f)))
+  return topFolders(root, files).map((f) => (f.folder === "." ? { ...f, readme } : f))
+}
+
 /**
  * Fill the space and show it answering: the repository's docs (or, with too
- * few, the code-scan skill), each write previewed and confirmed first, then
- * one real search over what arrived.
+ * few, the code-scan skill), consented to first, then one real search over
+ * what arrived.
+ *
+ * With `askImport`, a repository that has documents gets one question — the
+ * count, where from, and in a team space who will see them — rather than a
+ * folder list, a preview and one or two confirmations in a row. Without it,
+ * or with nothing found to ask about, the step-by-step path stays as it was.
  */
 async function firstFill(
   d: InitCommandDeps,
@@ -915,8 +1005,28 @@ async function firstFill(
 ): Promise<void> {
   let target = repo
   let files = target ? await scanDocs(target.root) : []
+  const space = mode === "team" ? (auth?.orgSlug ?? "the team space") : null
 
-  if (target && files.length > 0 && d.selectFolders) {
+  // Whether the person has already said yes to these documents, so nothing
+  // after this asks about them again.
+  let consented = false
+  let askFolders = true
+  if (target && files.length > 0 && d.askImport) {
+    const answer = await d.askImport({
+      n: files.length,
+      label: target.label,
+      folders: importFolders(target.root, files),
+      space,
+    })
+    if (answer === null || answer === "skip") {
+      d.out(ui.warn("Nothing was imported."))
+      return
+    }
+    consented = true
+    askFolders = answer === "choose"
+  }
+
+  if (askFolders && target && files.length > 0 && d.selectFolders) {
     const root = target.root
     const picked = await d.selectFolders(topFolders(root, files))
     if (picked === null) {
@@ -926,7 +1036,7 @@ async function firstFill(
     files = files.filter((f) => picked.includes(topFolders(root, [f])[0]!.folder))
   }
 
-  while (d.addFolder) {
+  while (askFolders && d.addFolder) {
     const answer = (await d.addFolder())?.trim()
     if (!answer) break
     const dir = resolve(d.cwd, answer.replace(/^~(?=$|\/)/, d.home))
@@ -949,31 +1059,56 @@ async function firstFill(
     return
   }
 
-  const fill = await planFill(target, files, plan.agents, plan.scope, d.home, mode)
+  let fill = await planFill(target, files, plan.agents, plan.scope, d.home, mode)
   if (fill.files.length === 0 && fill.skills.length === 0) {
     d.out(`\n${ui.dim(`No documents to import in ${target.root}.`)}${mode === "team" ? ` ${CONSOLE_IMPORT}` : ""}`)
     return
   }
 
-  printFillPreview(d, fill, "Will")
-  const ask = fill.files.length > 0 ? "Import these documents?" : "Write the skill files?"
-  if (d.confirmWrite && (await d.confirmWrite(ask)) !== true) {
-    d.out(ui.warn("Nothing was imported."))
-    return
-  }
-  if (mode === "team" && fill.files.length > 0 && d.confirmTeamImport) {
-    if ((await d.confirmTeamImport(fill.files.length, auth?.orgSlug ?? "the team space")) !== true) {
+  if (consented) {
+    // The documents are agreed to; skill files written into the person's
+    // agent config are a different write, and still shown and asked about.
+    if (fill.skills.length > 0) {
+      printSkillPreview(d, fill, "Will")
+      if (d.confirmWrite && (await d.confirmWrite("Write the skill files?")) !== true) {
+        fill = { ...fill, skills: [] }
+        if (fill.files.length === 0) {
+          d.out(ui.warn("Nothing was imported."))
+          return
+        }
+      }
+    }
+  } else {
+    printFillPreview(d, fill, "Will")
+    const ask = fill.files.length > 0 ? "Import these documents?" : "Write the skill files?"
+    if (d.confirmWrite && (await d.confirmWrite(ask)) !== true) {
       d.out(ui.warn("Nothing was imported."))
       return
+    }
+    if (mode === "team" && fill.files.length > 0 && d.confirmTeamImport) {
+      if ((await d.confirmTeamImport(fill.files.length, space ?? "the team space")) !== true) {
+        d.out(ui.warn("Nothing was imported."))
+        return
+      }
     }
   }
 
   const store = await (d.openStore ?? makeStore)(d.root)
-  const result = await applyFill(store, fill)
-  for (const { path, error } of result.failed) d.out(ui.warn(`could not import ${path}: ${error}`))
+  const shown = fill.files.length > 0 ? d.progress?.(fill.files.length) : undefined
+  let result: Awaited<ReturnType<typeof applyFill>>
+  try {
+    result = await applyFill(store, fill, shown ? (done, total) => shown.tick(done, total) : undefined, {
+      concurrency: mode === "team" ? TEAM_IMPORT_CONCURRENCY : 1,
+    })
+  } finally {
+    // Stopped whatever happens: a spinner left running keeps drawing over
+    // whatever is printed next, error included.
+    shown?.stop()
+  }
   if (fill.files.length > 0) {
-    const failed = result.failed.length > 0 ? ` — ${result.failed.length} could not be imported` : ""
-    d.out(ui.ok(`imported ${plural(result.titles.length, "document")} from ${fill.repo.label}${failed}`))
+    const [line, ...failures] = fillSummaryLines(result, fill.repo.label, fill.repo.root)
+    d.out(ui.ok(line!))
+    for (const failure of failures) d.out(ui.warn(failure))
   }
   for (const skill of fill.skills) d.out(ui.ok(`wrote ${skill.path}`))
   if (mode === "team" && fill.files.length < CODE_SCAN_THRESHOLD) {
@@ -2484,6 +2619,32 @@ export async function main(argv: string[]): Promise<void> {
           return { agents: answer.filter((a): a is Agent => a !== "other"), other: answer.includes("other") }
         },
         confirmWrite: async (message) => answered(await clack!.confirm({ message, initialValue: true })),
+        askImport: async ({ n, label, folders, space }) =>
+          answered(
+            await clack!.select<"yes" | "choose" | "skip">({
+              message: importQuestion(n, label, folders, space),
+              options: [
+                { value: "yes", label: "Yes" },
+                { value: "choose", label: "Choose folders" },
+                { value: "skip", label: "Skip" },
+              ],
+              initialValue: "yes",
+            }),
+          ),
+        progress: (total) => {
+          const spin = clack!.spinner()
+          let reached = 0
+          spin.start(`Importing 0/${total}…`)
+          return {
+            tick: (done, all) => {
+              reached = done
+              spin.message(`Importing ${done}/${all}…`)
+            },
+            // Left as how far it got: the summary line that follows says
+            // what that came to.
+            stop: () => spin.stop(`${reached}/${total} done`),
+          }
+        },
         selectFolders: async (folders) =>
           answered(
             await clack!.multiselect({

@@ -7,6 +7,7 @@ import { applyFill, CODE_SCAN_THRESHOLD, importSource, planFill } from "../src/f
 import { codeScanPrompt, IMPORT_SKILL } from "../src/import-skill"
 import { repoLabel } from "../src/repo"
 import { FileStore } from "../src/store"
+import type { Store } from "@cairn-kb/protocol/types"
 
 let tmp: string
 let store: FileStore
@@ -201,4 +202,58 @@ test("a file that cannot be read or stored is reported, and the rest still impor
   expect(result.failed[0]!.error).toContain("ENOENT")
   expect(result.failed[1]!.error).toBe("store said no")
   expect(progress).toEqual([1, 2, 3, 4])
+})
+
+test("applyFill with concurrency 4 keeps plan order and never has more than 4 in flight", async () => {
+  const root = join(tmp, "many")
+  await mkdir(root)
+  const names = Array.from({ length: 10 }, (_, i) => `doc${String(i).padStart(2, "0")}.md`)
+  for (const name of names) await writeFile(join(root, name), `# ${name}\n\nbody of ${name}\n`)
+  let inFlight = 0
+  let most = 0
+  // Earlier files take longer, so they finish out of order.
+  const fake = {
+    importDocument: async (input: { title: string; text: string; source: string }) => {
+      inFlight++
+      most = Math.max(most, inFlight)
+      const i = names.findIndex((n) => input.source.endsWith(n))
+      await new Promise((r) => setTimeout(r, (names.length - i) * 3))
+      inFlight--
+      return {
+        outcome: "created",
+        document: { id: `d${i}`, title: input.title, text: input.text, source: input.source },
+      }
+    },
+  } as unknown as Store
+  const files = names.map((n) => join(root, n))
+  const progress: number[] = []
+  const result = await applyFill(
+    fake,
+    await planFill({ root, label: "many" }, files, [], "project", home, "team"),
+    (done) => progress.push(done),
+    { concurrency: 4 },
+  )
+  expect(result.titles).toEqual(names)
+  expect(result.created).toBe(10)
+  expect(most).toBe(4)
+  expect(progress).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+})
+
+test("applyFill imports one at a time by default", async () => {
+  const root = join(tmp, "seq")
+  await mkdir(root)
+  for (const name of ["a.md", "b.md", "c.md"]) await writeFile(join(root, name), `# ${name}\n\nbody\n`)
+  let inFlight = 0
+  let most = 0
+  const fake = {
+    importDocument: async (input: { title: string; text: string; source: string }) => {
+      most = Math.max(most, ++inFlight)
+      await new Promise((r) => setTimeout(r, 2))
+      inFlight--
+      return { outcome: "created", document: { id: input.source, title: input.title } }
+    },
+  } as unknown as Store
+  const files = ["a.md", "b.md", "c.md"].map((n) => join(root, n))
+  await applyFill(fake, await planFill({ root, label: "seq" }, files, [], "project", home, "local"))
+  expect(most).toBe(1)
 })
