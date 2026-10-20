@@ -599,7 +599,13 @@ export class FileStore implements Store {
     // An adopted document has no path. One whose text matches this file IS
     // this file: it takes the path and keeps its id, so citations survive and
     // adopt-then-reimport does not leave two copies of everything.
-    const adopted = all.find((d) => d.source === null && d.hash === hash)
+    //
+    // Never for a generated write, though: `input.generated` means an agent
+    // wrote this text just now, not that some unrelated sourceless document
+    // has reappeared with a path. Matching on hash alone there would let a
+    // generated overview silently claim a human's adopted document the first
+    // time the two happened to produce identical bytes.
+    const adopted = input.generated ? undefined : all.find((d) => d.source === null && d.hash === hash)
     if (adopted) {
       const { generated: _g2, repo: _r2, ...adoptedRest } = adopted
       const claimed: Document = {

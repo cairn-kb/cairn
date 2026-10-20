@@ -4177,8 +4177,13 @@ test("formatDocument shows generated and the repo label for a generated document
     created: "", updated: "", hash: "h", generated: true, repo: "app",
   }
   const out = formatDocument(doc)
-  expect(out).toContain("generated")
-  expect(out).toContain("app")
+  // Scoped to the title line specifically: the metadata line underneath
+  // already contains the literal text "generated:app/architecture" as part
+  // of the document's source, so asserting against the whole output would
+  // pass even if the title's own generated label were removed.
+  const titleLine = out.split("\n")[0]!
+  expect(titleLine).toContain("generated")
+  expect(titleLine).toContain("app")
 })
 
 test("formatDocument says nothing about generated for ordinary imported material", () => {

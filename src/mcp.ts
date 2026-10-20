@@ -292,18 +292,41 @@ export interface KbTools {
 }
 
 /**
- * `slug` and `repo` both end up as path-like segments inside
- * `generated:${repo}/${slug}`, so both are held to the same shape: lowercase
- * letters, digits and hyphens. That is enough on its own to rule out "/" and
- * "..", without a second, separate traversal check that could drift from it.
+ * `slug` ends up as a path-like segment inside `generated:${repo}/${slug}`,
+ * so it is held to the shape that alone rules out "/" and ".." without a
+ * second, separate traversal check that could drift from it: lowercase
+ * letters, digits and hyphens, starting with a letter or digit, at most 64
+ * characters.
  */
-const SEGMENT_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
+const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 
-function assertSegment(field: "repo" | "slug", value: string): void {
-  if (!SEGMENT_PATTERN.test(value)) {
+/**
+ * `repo` is a label an agent was handed, not a path segment it invents, and
+ * ends up on the right of `generated:${repo}/...` — still compared by string
+ * equality (`Store.importDocument` matches on `source` as a whole), never
+ * split apart or joined onto a filesystem path (see `taggedFields` in
+ * src/store.ts). So it is allowed the shape of an actual repository name:
+ * letters of either case, digits, ".", "_" and "-", 1 to 100 characters. A
+ * repo of ".." passes this pattern — harmless, since nothing ever resolves it
+ * against a directory.
+ */
+const REPO_PATTERN = /^[A-Za-z0-9._-]{1,100}$/
+
+function assertSlug(value: string): void {
+  if (!SLUG_PATTERN.test(value)) {
     throw new Error(
-      `team_knowledge_write_document: ${field} must be lowercase letters, digits and hyphens only ` +
-        `(no "/", ".." or uppercase) — got "${value}".`,
+      `team_knowledge_write_document: slug must be lowercase letters, digits and hyphens only, ` +
+        `starting with a letter or digit, at most 64 characters (no "/", ".." or uppercase) — ` +
+        `got "${value}".`,
+    )
+  }
+}
+
+function assertRepo(value: string): void {
+  if (!REPO_PATTERN.test(value)) {
+    throw new Error(
+      `team_knowledge_write_document: repo must be letters, digits, ".", "_" or "-" only, ` +
+        `1 to 100 characters (no "/") — got "${value}".`,
     )
   }
 }
@@ -540,8 +563,8 @@ export function createTools(store: Store, log: EventSink): KbTools {
       text: string
       agent: string
     }) {
-      assertSegment("repo", input.repo)
-      assertSegment("slug", input.slug)
+      assertRepo(input.repo)
+      assertSlug(input.slug)
       if (input.title.trim() === "") {
         throw new Error("team_knowledge_write_document: title must not be empty.")
       }
@@ -692,7 +715,16 @@ export function createMcpServer(
       // Only here, never inside `createTools(...).kbSearch` itself — that
       // function is also called directly by tests and by any future
       // in-process caller that should not have to carry this along.
-      await opts.onSearchResult?.(result.hits.length)
+      //
+      // Guarded against both a synchronous throw and a rejection: this hook
+      // is instrumentation (Task 13 wires it to telemetry), not part of the
+      // search contract, so a hook that misbehaves must never turn an
+      // agent's search into an error.
+      try {
+        await opts.onSearchResult?.(result.hits.length)
+      } catch {
+        // Swallowed deliberately — see above.
+      }
       return { content: [{ type: "text", text: JSON.stringify(result) }] }
     },
   )
