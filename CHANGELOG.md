@@ -25,10 +25,10 @@
   round) is left as it is, and one linked anywhere else is left alone with
   the line to add by hand. `cairn doctor` accepts a `CLAUDE.md` that imports,
   or is a link to, an `AGENTS.md` holding the instructions.
-- `cairn doctor` now fails the instructions check when Claude Code is set up,
-  the instructions are only in `AGENTS.md`, and a `CLAUDE.md` in the project
-  or any folder above it means Claude Code never reads them. Re-running
-  `cairn init` fixes it.
+- `cairn doctor` now reports when Claude Code can't see cairn's
+  instructions: when they are only in `AGENTS.md` while a `CLAUDE.md` exists
+  in the project or a folder above it, or only in another agent's rules
+  file. Re-run `cairn init` to fix it.
 - `cairn init` no longer replaces a symlinked instructions file with a copy;
   it writes to the file the link points to.
 
