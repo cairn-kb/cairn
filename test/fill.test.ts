@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { EventLog } from "../src/events"
 import { applyFill, CODE_SCAN_THRESHOLD, importSource, planFill } from "../src/fill"
 import { codeScanPrompt, IMPORT_SKILL } from "../src/import-skill"
+import { repoLabel } from "../src/repo"
 import { FileStore } from "../src/store"
 
 let tmp: string
@@ -135,6 +136,23 @@ test("two repositories' READMEs fill one space without colliding", async () => {
   const after = await store.listDocuments()
   expect(after).toHaveLength(2)
   expect(after.find((d) => d.source === "b:README.md")).toEqual(bBefore)
+})
+
+test("two repositories with the same name under different owners never share a source", async () => {
+  const repos = [
+    { root: join(tmp, "acme", "api"), label: repoLabel("git@github.com:acme/api.git", join(tmp, "acme", "api")) },
+    { root: join(tmp, "other", "api"), label: repoLabel("git@github.com:other/api.git", join(tmp, "other", "api")) },
+  ]
+  for (const [i, r] of repos.entries()) {
+    await mkdir(r.root, { recursive: true })
+    await writeFile(join(r.root, "README.md"), `# API ${i}\n\nOwner ${i}.\n`)
+  }
+  for (const r of repos) await applyFill(store, await planFill(r, [join(r.root, "README.md")], [], "project", home, "team"))
+  const docs = (await store.listDocuments()).sort((x, y) => (x.source ?? "").localeCompare(y.source ?? ""))
+  expect(docs.map((d) => [d.source, d.repo])).toEqual([
+    ["acme/api:README.md", "acme/api"],
+    ["other/api:README.md", "other/api"],
+  ])
 })
 
 test("applyFill reports progress, skips empty files, and writes the planned skills", async () => {

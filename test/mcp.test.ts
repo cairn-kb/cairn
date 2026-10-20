@@ -1001,10 +1001,19 @@ test("kbWriteDocument refuses a slug that is not lowercase kebab-case, naming th
   ).rejects.toThrow(/slug/)
 })
 
-test("kbWriteDocument refuses a repo containing a path separator, naming the field", async () => {
-  await expect(
-    tools.kbWriteDocument({ repo: "a/b", slug: "x", title: "t", text: "t", agent: "cursor" }),
-  ).rejects.toThrow(/repo/)
+test("kbWriteDocument refuses a repo with more than one separator or an empty part, naming the field", async () => {
+  for (const repo of ["a/b/c", "/a", "a/", "a//b"]) {
+    await expect(
+      tools.kbWriteDocument({ repo, slug: "x", title: "t", text: "t", agent: "cursor" }),
+    ).rejects.toThrow(/repo/)
+  }
+  expect(await store.listDocuments()).toEqual([])
+})
+
+test("kbWriteDocument accepts an owner/name repo, the label init gives a remote", async () => {
+  const out = await tools.kbWriteDocument({ repo: "acme/api", slug: "architecture", title: "t", text: "t", agent: "cursor" })
+  const doc = await store.getDocument(out.id)
+  expect(doc).toMatchObject({ repo: "acme/api", source: "generated:acme/api/architecture" })
 })
 
 // `repo` is a label an agent was given, not a path segment it invents, and is

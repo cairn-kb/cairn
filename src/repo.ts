@@ -44,24 +44,42 @@ function sanitise(name: string): string {
 }
 
 /**
- * The origin remote's last path segment without `.git` — the same for
- * `git@host:org/name.git` and `https://host/org/name.git/`, ignoring any
- * `?query` or `#fragment` — or, with no usable remote name, the root
- * directory's name. Anything outside `[A-Za-z0-9._-]`
- * becomes `-`.
+ * `owner/name` from the origin remote's last two path segments, without
+ * `.git` — the same for `git@host:acme/api.git`, `https://host/acme/api.git/`
+ * and `ssh://git@host:2222/acme/api`, ignoring any `?query` or `#fragment`.
+ * The owner is what keeps `acme/api` and `other/api` from sharing a source in
+ * one space. A remote that names no owner gives just `name`.
+ *
+ * Only when there is no remote, or it names nothing usable, does the label
+ * fall back to the root directory's name — with no owner, so two such
+ * directories of the same name do share a label.
+ *
+ * Each part keeps `[A-Za-z0-9._-]`, anything else becoming `-`, and the
+ * whole stays within the 100 characters a document's `repo` may hold.
  */
 export function repoLabel(remoteUrl: string | null, root: string): string {
-  const fromRemote = remoteUrl
-    ?.trim()
-    .replace(/[?#].*$/, "")
-    .replace(/\/+$/, "")
-    .replace(/\.git$/, "")
-    .split(/[/:]/)
-    .pop()
-  return usable(sanitise(fromRemote ?? "")) ?? usable(sanitise(basename(root))) ?? "repo"
+  const parts = remoteUrl ? remotePath(remoteUrl) : []
+  const name = usable(sanitise(parts.at(-1) ?? ""))
+  if (!name) return usable(sanitise(basename(root))) ?? "repo"
+  const room = Math.max(0, MAX_LABEL - name.length - 1)
+  const owner = usable(sanitise(parts.at(-2) ?? "").slice(0, room))
+  return owner ? `${owner}/${name}` : name
 }
 
-/** Null for a label that names nothing: empty, `.` or `..`. */
+/** A remote's path segments, minus the scheme and host of a URL or the
+ *  `user@host:` of an scp-style address, and minus a trailing `.git`. */
+function remotePath(remoteUrl: string): string[] {
+  let path = remoteUrl.trim().replace(/[?#].*$/, "")
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(path)) path = path.replace(/^[^:]+:\/\/[^/]*/, "")
+  else if (/^[^/]*:/.test(path)) path = path.slice(path.indexOf(":") + 1)
+  return path
+    .replace(/\/+$/, "")
+    .replace(/\.git$/, "")
+    .split("/")
+    .filter((segment) => segment !== "")
+}
+
+/** Null for a label part that names nothing: empty, `.` or `..`. */
 function usable(label: string): string | null {
   return label === "" || label === "." || label === ".." ? null : label
 }
