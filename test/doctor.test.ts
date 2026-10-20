@@ -293,6 +293,24 @@ test("an instructions file with the block passes regardless of configuration", a
   expect(r.status).toBe("ok")
 })
 
+test("a CLAUDE.md that imports AGENTS.md, which has the block, passes and says so", async () => {
+  // Claude Code reads the CLAUDE.md and AGENTS.md through its import, which is
+  // how `cairn init` reaches Claude Code when the block lives in AGENTS.md.
+  await writeFile(join(cwd, "CLAUDE.md"), "# Claude notes\n@AGENTS.md\n", "utf-8")
+  await writeFile(join(cwd, "AGENTS.md"), "notes\n<!-- cairn:start -->\nrules\n<!-- cairn:end -->\n", "utf-8")
+  const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
+  expect(r.status).toBe("ok")
+  expect(r.detail).toContain("imports")
+  expect(r.detail).toContain(join(cwd, "CLAUDE.md"))
+})
+
+test("a CLAUDE.md that imports an AGENTS.md without the block still fails", async () => {
+  await writeFile(join(cwd, "CLAUDE.md"), "@AGENTS.md\n", "utf-8")
+  await writeFile(join(cwd, "AGENTS.md"), "notes\n", "utf-8")
+  const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
+  expect(r.status).toBe("fail")
+})
+
 test("telemetry with no config reports not configured", async () => {
   await mkdir(join(home, ".claude"), { recursive: true })
   const r = await checkTelemetry(deps())

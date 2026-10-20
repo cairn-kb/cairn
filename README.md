@@ -168,6 +168,12 @@ local, and a local root holding anything goes through the migration below.
 existing `CLAUDE.md` is honoured rather than orphaned, and a repo with neither
 gets `AGENTS.md` — the cross-tool convention that Copilot and others read.
 
+Claude Code skips `AGENTS.md` whenever a `CLAUDE.md` exists in the project or
+any folder above it, so when the instructions go in `AGENTS.md` and Claude Code
+is set up, project scope also makes sure the `CLAUDE.md` next to it has an
+`@AGENTS.md` import line — adding one, or creating the file with just that
+line. A `CLAUDE.md` that already imports it is left alone.
+
 **Project scope adds the MCP configs to `.gitignore`**, because they contain an
 absolute path that is wrong on every other machine. Committing them would hand
 teammates a broken config, which is worse than no config: each person runs

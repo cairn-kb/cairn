@@ -3,8 +3,10 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
+  addAgentsImport,
   cairnServerEntry,
   detectAgents,
+  importsAgentsMd,
   mergeMcpConfig,
   planInit,
   resolveInstructionFile,
@@ -645,4 +647,155 @@ test("an interactive project run configures them and leaves nothing out", async 
   } finally {
     await rm(repo, { recursive: true, force: true })
   }
+})
+
+// --- Claude Code and a project's AGENTS.md ----------------------------------
+//
+// Claude Code reads AGENTS.md only when no CLAUDE.md exists in the working
+// directory or any folder above it. Its documented way to read AGENTS.md
+// anyway is an `@AGENTS.md` import in CLAUDE.md, so project scope puts one
+// next to the AGENTS.md that holds the block.
+
+test("an import line is @AGENTS.md or @./AGENTS.md on a line of its own", () => {
+  expect(importsAgentsMd("@AGENTS.md")).toBe(true)
+  expect(importsAgentsMd("# Mine\n\n  @./AGENTS.md  \n")).toBe(true)
+  expect(importsAgentsMd("# Mine\n\nSee @AGENTS.md for more.\n")).toBe(false)
+  expect(importsAgentsMd("`@AGENTS.md`\n")).toBe(false)
+  expect(importsAgentsMd("@AGENTS.md.bak\n")).toBe(false)
+  expect(importsAgentsMd("")).toBe(false)
+})
+
+test("adding the import keeps what the teammate wrote", () => {
+  expect(addAgentsImport("")).toBe("@AGENTS.md\n")
+  const out = addAgentsImport("# Mine\n\nDo not lose this.")
+  expect(out).toContain("Do not lose this.")
+  expect(importsAgentsMd(out)).toBe(true)
+  expect(out.endsWith("\n")).toBe(true)
+})
+
+async function inRepo(fn: (repo: string) => Promise<void>) {
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  try {
+    await fn(repo)
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+}
+
+const projectRun = (repo: string, over: { dryRun?: boolean; interactive?: boolean } = {}) =>
+  runInit({
+    home, cwd: repo, cliPath: "/abs/cli.ts", scope: "project", dryRun: over.dryRun ?? false,
+    bunPath: "/opt/homebrew/bin/bun", execPath: "/opt/homebrew/bin/bun", cairnRoot: "/tmp/cairn-root",
+    interactive: over.interactive,
+  })
+
+test("a new repo gets AGENTS.md with the block and a CLAUDE.md that imports it", async () => {
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    const r = await projectRun(repo, { interactive: false })
+    expect(await readFile(join(repo, "AGENTS.md"), "utf-8")).toContain("<!-- cairn:start -->")
+    expect(await readFile(join(repo, "CLAUDE.md"), "utf-8")).toBe("@AGENTS.md\n")
+    expect(r.written).toContain(join(repo, "CLAUDE.md"))
+  })
+})
+
+test("an existing AGENTS.md with no CLAUDE.md gets a CLAUDE.md that imports it", async () => {
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    await writeFile(join(repo, "AGENTS.md"), "# Ours\n", "utf-8")
+    await projectRun(repo)
+    expect(await readFile(join(repo, "CLAUDE.md"), "utf-8")).toBe("@AGENTS.md\n")
+  })
+})
+
+test("an existing CLAUDE.md without the import gets one, and never the block itself", async () => {
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    await writeFile(join(repo, "AGENTS.md"), "# Ours\n", "utf-8")
+    await writeFile(join(repo, "CLAUDE.md"), "# Claude notes\n\nDo not lose this.\n", "utf-8")
+    await projectRun(repo)
+    const claude = await readFile(join(repo, "CLAUDE.md"), "utf-8")
+    expect(claude).toContain("Do not lose this.")
+    expect(importsAgentsMd(claude)).toBe(true)
+    expect(claude).not.toContain("<!-- cairn:start -->")
+    expect(await readFile(join(repo, "AGENTS.md"), "utf-8")).toContain("<!-- cairn:start -->")
+  })
+})
+
+test("a CLAUDE.md that gains the import loses a block an older run left in it", async () => {
+  // With the import, a block in both files is the same instructions read twice.
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    await writeFile(join(repo, "AGENTS.md"), "# Ours\n", "utf-8")
+    await writeFile(join(repo, "CLAUDE.md"), upsertBlock("# Claude notes\n", "OLD RULES"), "utf-8")
+    await projectRun(repo)
+    const claude = await readFile(join(repo, "CLAUDE.md"), "utf-8")
+    expect(claude).toContain("# Claude notes")
+    expect(claude).not.toContain("OLD RULES")
+    expect(claude).not.toContain("<!-- cairn:start -->")
+    expect(importsAgentsMd(claude)).toBe(true)
+  })
+})
+
+for (const line of ["@AGENTS.md", "  @./AGENTS.md  "]) {
+  test(`a CLAUDE.md that already imports AGENTS.md (${line.trim()}) is left alone`, async () => {
+    await mkdir(join(home, ".claude"))
+    await inRepo(async (repo) => {
+      const original = `# Claude notes\n${line}\n`
+      await writeFile(join(repo, "AGENTS.md"), "# Ours\n", "utf-8")
+      await writeFile(join(repo, "CLAUDE.md"), original, "utf-8")
+      const r = await projectRun(repo)
+      expect(r.written).not.toContain(join(repo, "CLAUDE.md"))
+      expect(await readFile(join(repo, "CLAUDE.md"), "utf-8")).toBe(original)
+    })
+  })
+}
+
+test("re-running init writes nothing more to CLAUDE.md", async () => {
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    await projectRun(repo)
+    const r = await projectRun(repo)
+    expect(r.written).not.toContain(join(repo, "CLAUDE.md"))
+    expect(await readFile(join(repo, "CLAUDE.md"), "utf-8")).toBe("@AGENTS.md\n")
+  })
+})
+
+test("a dry run lists the CLAUDE.md it would create, and writes nothing", async () => {
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    const r = await projectRun(repo, { dryRun: true })
+    expect(r.written).toContain(join(repo, "CLAUDE.md"))
+    expect(await Bun.file(join(repo, "CLAUDE.md")).exists()).toBe(false)
+  })
+})
+
+test("a repo whose instructions live in CLAUDE.md keeps the block there and gains no import", async () => {
+  await mkdir(join(home, ".claude"))
+  await inRepo(async (repo) => {
+    await writeFile(join(repo, "CLAUDE.md"), "# Claude notes\n", "utf-8")
+    await projectRun(repo)
+    const claude = await readFile(join(repo, "CLAUDE.md"), "utf-8")
+    expect(claude).toContain("<!-- cairn:start -->")
+    expect(importsAgentsMd(claude)).toBe(false)
+    expect(await Bun.file(join(repo, "AGENTS.md")).exists()).toBe(false)
+  })
+})
+
+test("without Claude Code, project scope writes no CLAUDE.md", async () => {
+  await mkdir(join(home, ".cursor"))
+  await inRepo(async (repo) => {
+    const r = await projectRun(repo)
+    expect(r.written).not.toContain(join(repo, "CLAUDE.md"))
+    expect(await Bun.file(join(repo, "CLAUDE.md")).exists()).toBe(false)
+  })
+})
+
+test("global scope writes the block into ~/.claude/CLAUDE.md and no import anywhere", async () => {
+  await mkdir(join(home, ".claude"))
+  const r = await runInit({ home, cwd: home, cliPath: "/abs/cli.ts", scope: "global", dryRun: false, bunPath: "/opt/homebrew/bin/bun", execPath: "/opt/homebrew/bin/bun", cairnRoot: "/tmp/cairn-root" })
+  expect(r.written).not.toContain(join(home, "CLAUDE.md"))
+  const md = await readFile(join(home, ".claude", "CLAUDE.md"), "utf-8")
+  expect(md).toContain("<!-- cairn:start -->")
+  expect(importsAgentsMd(md)).toBe(false)
 })

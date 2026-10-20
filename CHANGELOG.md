@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `cairn init` now makes Claude Code read the instructions when they go into
+  `AGENTS.md`, by adding an `@AGENTS.md` import to the project's `CLAUDE.md`
+  or creating one. Before this, Claude Code skipped `AGENTS.md` whenever a
+  `CLAUDE.md` existed in the project or any folder above it. `cairn doctor`
+  accepts a `CLAUDE.md` that imports an `AGENTS.md` holding the instructions.
+
 ## [0.9.0] — 2026-10-20
 
 ### Added

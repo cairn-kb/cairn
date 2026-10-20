@@ -134,6 +134,36 @@ export function upsertBlock(text: string, block: string): string {
   return text.trim() === "" ? wrapped + "\n" : `${text.trimEnd()}\n\n${wrapped}\n`
 }
 
+/** Take our block out, leaving everything around it. */
+function removeBlock(text: string): string {
+  const start = text.indexOf(START)
+  const end = text.indexOf(END)
+  if (start === -1 || end === -1) return text
+  const rest = (text.slice(0, start).trimEnd() + "\n\n" + text.slice(end + END.length).trimStart()).trim()
+  return rest === "" ? "" : rest + "\n"
+}
+
+/**
+ * The line that makes Claude Code read a project's AGENTS.md from CLAUDE.md.
+ * <https://code.claude.com/docs/en/memory#agents-md>
+ */
+const AGENTS_IMPORT = "@AGENTS.md"
+
+/**
+ * Whether CLAUDE.md already imports AGENTS.md: a line that is exactly
+ * `@AGENTS.md`, or the `./` spelling of the same relative path. An import
+ * mentioned mid-sentence or in backticks is not counted, so a line of our own
+ * gets added rather than relying on one that may not be read as an import.
+ */
+export function importsAgentsMd(text: string): boolean {
+  return text.split("\n").some((l) => l.trim() === AGENTS_IMPORT || l.trim() === "@./AGENTS.md")
+}
+
+/** Add the import to a CLAUDE.md, keeping what the teammate wrote. */
+export function addAgentsImport(text: string): string {
+  return text.trim() === "" ? `${AGENTS_IMPORT}\n` : `${text.trimEnd()}\n\n${AGENTS_IMPORT}\n`
+}
+
 /** Append only the paths not already ignored, so re-running is a no-op. */
 export function upsertGitignore(existing: string, paths: string[]): string {
   const lines = existing.split("\n").map((l) => l.trim())
@@ -153,7 +183,9 @@ async function exists(path: string): Promise<boolean> {
  * Where a project's agent instructions live. AGENTS.md is the cross-tool
  * convention and wins when present; an existing CLAUDE.md is honoured rather
  * than orphaned; otherwise a new repo gets AGENTS.md. Never both — the same
- * instructions in two files means an agent reads them twice.
+ * instructions in two files means an agent reads them twice. When the block
+ * goes in AGENTS.md, Claude Code is pointed at it by an import line in
+ * CLAUDE.md, not by a second copy (see planInit).
  */
 export async function resolveInstructionFile(cwd: string): Promise<string> {
   if (await exists(join(cwd, "AGENTS.md"))) return join(cwd, "AGENTS.md")
@@ -371,6 +403,19 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
     // one when Claude Code is present; project scope shares AGENTS.md.
     if (scope === "project" || agents.includes("claude")) {
       pending.push({ path: instructions, content: upsertBlock(await read(instructions), RULES_BLOCK) })
+    }
+    // Claude Code reads a project's AGENTS.md only when no CLAUDE.md exists in
+    // the project or any folder above it — a CLAUDE.md in a parent directory is
+    // enough to hide it. An import from the project's own CLAUDE.md makes it
+    // read AGENTS.md either way. The block stays in AGENTS.md alone: a copy in
+    // CLAUDE.md as well would be the same instructions read twice, so one an
+    // older run left there comes out.
+    if (scope === "project" && agents.includes("claude") && basename(instructions) === "AGENTS.md") {
+      const claudeMd = join(dirname(instructions), "CLAUDE.md")
+      const text = await read(claudeMd)
+      if (!importsAgentsMd(text)) {
+        pending.push({ path: claudeMd, content: addAgentsImport(removeBlock(text)) })
+      }
     }
     // Codex reads ~/.codex/AGENTS.md everywhere and a project's AGENTS.md, but
     // not CLAUDE.md. So the global file carries the rules at global scope, and
