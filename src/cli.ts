@@ -11,6 +11,7 @@ import { generateAbstract, resolveGeneration } from "./generate"
 import type { ResolvedGeneration } from "./generate"
 import { runDoctor, spawnHandshake } from "./doctor"
 import { applyInit, planInit, type Scope } from "./init"
+import { detectAgents, formatAgents } from "./agents"
 import { planMigration, runMigration } from "./migrate"
 import { openInBrowser } from "./browser"
 import { runLogin, runLogout } from "./login"
@@ -472,17 +473,27 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
     dryRun: d.dryRun, bunPath: d.bunPath, execPath: d.execPath, cairnRoot: d.root,
     writeWithoutAgent: d.writeWithoutAgent,
   })
+  // Independent of plan.agents, which can hold an assumed agent nothing was
+  // actually detected for (see planInit's --project fallback) — the operator
+  // should still be told the truth about what is on disk.
+  const found = await detectAgents(d.home)
 
   for (const w of plan.warnings) d.out(`${ui.warn(w)}\n`)
 
   if (plan.agents.length === 0) {
     d.out(ui.warn("No supported agent found."))
-    d.out(ui.dim(`  Looked for ~/.claude and ~/.cursor in ${d.home}.`))
+    d.out(ui.dim(`  Looked for ~/.claude, ~/.cursor, ~/.codex and Claude Desktop in ${d.home}.`))
     // Naming the escape is the whole point: this used to stop here, and
     // doctor's remedy was `cairn init`, which arrives back at this line.
-    d.out(ui.dim("  Install Claude Code or Cursor, or run `cairn init --project`"))
+    d.out(ui.dim("  Install Claude Code, Cursor, Codex or Claude Desktop, or run `cairn init --project`"))
     d.out(ui.dim("  to write a project config anyway."))
     return "no-agent"
+  }
+
+  // Only meaningful with a human watching — a script reading stdout gets the
+  // same bytes it always has.
+  if (d.interactive) {
+    for (const line of formatAgents(found, ui)) d.out(`${line}\n`)
   }
 
   // "Will write: …" — named before consent is asked.
