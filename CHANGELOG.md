@@ -19,8 +19,14 @@
 - `cairn init` now makes Claude Code read the instructions when they go into
   `AGENTS.md`, by adding an `@AGENTS.md` import to the project's `CLAUDE.md`
   or creating one. Before this, Claude Code skipped `AGENTS.md` whenever a
-  `CLAUDE.md` existed in the project or any folder above it. `cairn doctor`
-  accepts a `CLAUDE.md` that imports an `AGENTS.md` holding the instructions.
+  `CLAUDE.md` existed in the project or any folder above it. A cairn block
+  an older version left in that `CLAUDE.md` is moved out, so the
+  instructions appear once. A `CLAUDE.md` linked to `AGENTS.md` (either way
+  round) is left as it is, and one linked anywhere else is left alone with
+  the line to add by hand. `cairn doctor` accepts a `CLAUDE.md` that imports,
+  or is a link to, an `AGENTS.md` holding the instructions.
+- `cairn init` no longer replaces a symlinked instructions file with a copy;
+  it writes to the file the link points to.
 
 ## [0.9.0] — 2026-10-20
 
