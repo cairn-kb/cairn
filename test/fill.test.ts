@@ -153,3 +153,34 @@ test("applyFill reports progress, skips empty files, and writes the planned skil
   const skill = await readFile(join(r.root, ".claude/skills/cairn-import/SKILL.md"), "utf-8")
   expect(skill).toBe(plan.skills[0]!.content)
 })
+
+test("a file that cannot be read or stored is reported, and the rest still import", async () => {
+  const root = join(tmp, "app")
+  await mkdir(root)
+  for (const name of ["a.md", "b.md", "c.md"]) await writeFile(join(root, name), `# ${name}\n\nbody of ${name}\n`)
+  const r = { root, label: "app" }
+  // `gone.md` is not on disk; `c.md` reads but the store refuses it.
+  const files = [join(root, "a.md"), join(root, "gone.md"), join(root, "b.md"), join(root, "c.md")]
+  const refusing = new Proxy(store, {
+    get(target, prop, receiver) {
+      if (prop === "importDocument") {
+        return async (input: { source: string }) => {
+          if (input.source === "app:c.md") throw new Error("store said no")
+          return target.importDocument(input as never)
+        }
+      }
+      const v = Reflect.get(target, prop, receiver)
+      return typeof v === "function" ? v.bind(target) : v
+    },
+  })
+  const progress: number[] = []
+  const result = await applyFill(refusing, await planFill(r, files, [], "project", home, "local"), (done) => {
+    progress.push(done)
+  })
+  expect(result.created).toBe(2)
+  expect(result.titles.sort()).toEqual(["a.md", "b.md"])
+  expect(result.failed.map((f) => f.path)).toEqual([join(root, "gone.md"), join(root, "c.md")])
+  expect(result.failed[0]!.error).toContain("ENOENT")
+  expect(result.failed[1]!.error).toBe("store said no")
+  expect(progress).toEqual([1, 2, 3, 4])
+})
