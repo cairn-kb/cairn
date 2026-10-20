@@ -36,6 +36,9 @@
 
 ### Fixed
 
+- `cairn doctor` now finds cairn in Codex's and Claude Desktop's config, and
+  finds a project's `.mcp.json` or `.cursor/mcp.json` at the top of the git
+  repository when you run it from a subfolder.
 - `cairn search` and an agent's search now find documents and claims for a
   question in plain words, ranked by relevance, instead of only an exact
   phrase.
