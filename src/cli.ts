@@ -2482,10 +2482,10 @@ export async function main(argv: string[]): Promise<void> {
         }
         // Read through a const: TypeScript cannot see the callback above
         // assign it, and narrows the `let` to null.
-        const handoff = launch as { prompt: string; cwd: string } | null
-        if (handoff) {
-          const proc = Bun.spawn(["claude", handoff.prompt], {
-            cwd: handoff.cwd,
+        const agentLaunch = launch as { prompt: string; cwd: string } | null
+        if (agentLaunch) {
+          const proc = Bun.spawn(["claude", agentLaunch.prompt], {
+            cwd: agentLaunch.cwd,
             stdio: ["inherit", "inherit", "inherit"],
           })
           // Awaited so cairn does not exit under it, but its exit code is
