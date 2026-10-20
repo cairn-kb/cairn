@@ -129,12 +129,26 @@ resolved from itself, and the instructions block that tells an agent to
 consult knowledge at session start. Then it asks where knowledge should live —
 local or team, see below.
 
+In a terminal, `init` keeps going once the files are written. It starts each
+agent's cairn entry exactly as written to prove the agent can run it, and says
+what it cannot check — Cursor's project approval, and that a running agent
+needs a restart. It offers to import the repository's docs (README, `docs/`,
+ADRs and other `.md` files outside dependency and build folders), lets you
+drop folders or add more, and runs one search over them to show a first
+answer. With fewer than three docs in a local space it installs a
+`cairn-import` skill for your agents instead and tells you what to say —
+`map this repo for cairn` — offering to start Claude Code with it. Choosing a
+team space signs you in first and confirms before importing anything your
+team will see. Every write is previewed and confirmed first. In a terminal,
+project scope means the git repository you are in, wherever inside it you run
+`init`.
+
 Pass `--local` or `--team` to skip the mode question, and `--project` or
 `--global` to skip the scope one — scripted onboarding needs both, plus
 `--yes` to skip every prompt and `--no-telemetry` (or `--telemetry`) to answer
 the consent question. A non-interactive run defaults to project scope rather
 than silently editing files in your home directory. `--dry-run` shows every
-file it would touch. Re-running `init` with neither flag leaves an existing
+file it would touch and what it would import. Re-running `init` with neither flag leaves an existing
 root's mode alone. `--local` or `--team` on an existing root switches it only
 when nothing would be stranded: a team root holding claims refuses to go
 local, and a local root holding anything goes through the migration below.

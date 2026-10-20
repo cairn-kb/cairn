@@ -176,6 +176,9 @@ export interface InitPlan {
   scope: Scope
   /** Every file to write, with its full final content. */
   changes: { path: string; content: string }[]
+  /** Each configured agent's MCP config file, among `changes` — where its
+   *  cairn entry is read back from to prove it. */
+  configs: { agent: Agent; path: string }[]
   printOnly: string[]
   warnings: string[]
   /**
@@ -247,17 +250,20 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
   // Compute every change before writing any of it, so a config we cannot parse
   // aborts the whole run rather than leaving half of it applied.
   const pending: { path: string; content: string }[] = []
+  const configs: { agent: Agent; path: string }[] = []
   const gitignore: string[] = []
 
   if (agents.includes("claude")) {
     const cfg = scope === "global" ? join(home, ".claude.json") : join(cwd, ".mcp.json")
     pending.push({ path: cfg, content: mergeMcpConfig(await read(cfg), entry) })
+    configs.push({ agent: "claude", path: cfg })
     if (scope === "project") gitignore.push(".mcp.json")
   }
 
   if (agents.includes("cursor")) {
     const cfg = join(scope === "global" ? home : cwd, ".cursor", "mcp.json")
     pending.push({ path: cfg, content: mergeMcpConfig(await read(cfg), entry) })
+    configs.push({ agent: "cursor", path: cfg })
     if (scope === "project") {
       // Project rules ARE a file, unlike user-level rules — nothing to paste.
       const rules = join(cwd, ".cursor", "rules", "cairn.mdc")
@@ -287,6 +293,7 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
   if (agents.includes("codex")) {
     const cfg = join(home, ".codex", "config.toml")
     pending.push({ path: cfg, content: mergeCodexConfig(await read(cfg), entry) })
+    configs.push({ agent: "codex", path: cfg })
   }
 
   // Claude Desktop likewise has only an app-wide config. Detection found the
@@ -294,6 +301,7 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
   const desktopCfg = desktopConfigPath(home, platform, opts.appData)
   if (agents.includes("claude-desktop") && desktopCfg) {
     pending.push({ path: desktopCfg, content: mergeMcpConfig(await read(desktopCfg), entry) })
+    configs.push({ agent: "claude-desktop", path: desktopCfg })
     printOnly.push(
       "Claude Desktop has no instructions file — paste the block below into a Claude project's " +
         "instructions (Projects → your project → Instructions).",
@@ -328,7 +336,7 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
     if (merged !== (await read(gi))) pending.push({ path: gi, content: merged })
   }
 
-  return { agents, scope, changes: pending, printOnly, warnings, nextSteps, instructions: RULES_BLOCK }
+  return { agents, scope, changes: pending, configs, printOnly, warnings, nextSteps, instructions: RULES_BLOCK }
 }
 
 /**
