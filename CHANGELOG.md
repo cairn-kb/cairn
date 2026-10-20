@@ -5,7 +5,7 @@
 ### Added
 
 - cairn's MCP server now sends the same guidance as server instructions when
-  an agent connects, and the search tool's description says when to use it.
+  an agent connects, and the search tool's description says what it covers.
 
 ### Changed
 

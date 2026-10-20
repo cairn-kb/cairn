@@ -12,12 +12,12 @@ import {
   resolveInstructionFile,
   RULES_BLOCK,
   runInit,
-  SEARCH_GUIDANCE,
   upsertBlock,
   upsertGitignore,
   writeAtomic,
 } from "../src/init"
 import { readCodexEntry } from "../src/codex-config"
+import { SEARCH_GUIDANCE } from "../src/guidance"
 
 let home: string
 

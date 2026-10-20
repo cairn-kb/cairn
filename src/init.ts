@@ -1,6 +1,7 @@
 import { lstat, mkdir, readFile, readlink, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { COMPILED } from "./version"
+import { SEARCH_GUIDANCE } from "./guidance"
 import { desktopConfigPath, detectAgents } from "./agents"
 import { codexBlock, mergeCodexConfig } from "./codex-config"
 import type { Agent } from "./agents"
@@ -11,18 +12,6 @@ export type Scope = "global" | "project"
 
 const START = "<!-- cairn:start -->"
 const END = "<!-- cairn:end -->"
-
-/**
- * When to look in cairn at all. Without it the block only said what to do at
- * the start and the end of a session, and an agent answered project questions
- * from memory with the tools sitting unused. The MCP server sends the same
- * words as its instructions (src/mcp.ts), so the two cannot drift apart.
- */
-export const SEARCH_GUIDANCE = `This project's team knowledge lives in cairn. Before answering a question about
-the project's decisions, conventions, architecture or history, call
-team_knowledge_search, and read the documents it points to with
-team_knowledge_read. Answer from what they return, and say so when they have
-nothing.`
 
 /** What an agent is told to do. This is prompt surface, not documentation. */
 export const RULES_BLOCK = `${SEARCH_GUIDANCE}

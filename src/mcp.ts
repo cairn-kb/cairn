@@ -7,7 +7,7 @@ import type { EventInput, EventSink } from "./events"
 import type { CiteInput, Claim, ImportOutcome, Status, Store } from "@cairn-kb/protocol/types"
 import type { Mode } from "./config"
 import { VERSION } from "./version"
-import { SEARCH_GUIDANCE } from "./init"
+import { SEARCH_GUIDANCE } from "./guidance"
 
 /** The precision bar lives here: tunable without a code change. */
 export const PROPOSE_DESCRIPTION = `Propose a piece of durable team knowledge for human review.
@@ -94,7 +94,8 @@ does not tell you what the claim covers. Read the claim in full before relying o
  *
  * It opens with the search guidance from the instructions block `cairn init`
  * writes, word for word, so a host that never reads that block is still told
- * when to search.
+ * when to search. The search description says what the tool holds, and the
+ * instruction to search first lives in SEARCH_GUIDANCE.
  */
 export const SERVER_INSTRUCTIONS =
   SEARCH_GUIDANCE +
@@ -702,10 +703,10 @@ export function createMcpServer(
       title: "Search team knowledge",
       description:
         "Search claims and documents by text when you have a specific question map's abstracts " +
-        "didn't already answer. Use it before answering any question about the project's " +
-        "decisions, conventions, architecture or history, before relying on memory or guessing, " +
-        "and before proposing a claim, so the proposal doesn't duplicate one. Results come back " +
-        "as two blocks in a fixed order — every matching " +
+        "didn't already answer. It covers the team's recorded decisions, conventions, " +
+        "architecture and history, so it is the source for questions about this project that " +
+        "memory alone can't settle, and it shows whether a claim you are about to propose " +
+        "already exists. Results come back as two blocks in a fixed order — every matching " +
         "claim, then every matching document — never interleaved by relevance score, so you can " +
         "always predict where one block ends and the next begins. A claim is durable knowledge a " +
         "human has reviewed and approved. A document is raw imported source material nobody has " +
