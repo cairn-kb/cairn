@@ -22,9 +22,11 @@
 
 - Importing into a local space no longer slows down as the space grows —
   each document is found through an index instead of by reading every
-  stored document. The first command after upgrading builds that index by
-  reading every stored document once, so a one-off slow start on a large
-  space is expected.
+  stored document. The index is built once, on the first command after
+  upgrading, which reads every stored document that one time.
+- A document file that cannot be read no longer stops a local space from
+  opening. Imports that could duplicate it stop and say which file to fix
+  or remove.
 
 ## [0.9.1] — 2026-10-20
 

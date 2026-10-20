@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite"
-import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { absentTerms } from "@cairn-kb/protocol/absence"
 import { makeId, parseClaim, serializeClaim } from "./claims"
@@ -76,6 +76,33 @@ export class AlreadyResolvedError extends Error {
   }
 }
 
+/** A document file that would not parse, as it was when last read. */
+interface Unreadable {
+  name: string
+  mtime: number
+  size: number
+}
+
+/** What `rebuildKeyTable` swaps in: the documents that parsed, and the files that did not. */
+interface KeySnapshot {
+  docs: Document[]
+  unreadable: Unreadable[]
+}
+
+/**
+ * A file's mtime (whole milliseconds, to fit an INTEGER column) and size, or
+ * null if it is gone. Enough to tell that a file recorded as unreadable has
+ * been touched since, without reading it.
+ */
+async function fingerprint(path: string): Promise<{ mtime: number; size: number } | null> {
+  try {
+    const s = await stat(path)
+    return { mtime: Math.trunc(s.mtimeMs), size: s.size }
+  } catch {
+    return null
+  }
+}
+
 export class FileStore implements Store {
   private db!: Database
 
@@ -130,6 +157,9 @@ export class FileStore implements Store {
     )
     this.db.run("CREATE INDEX IF NOT EXISTS document_keys_source ON document_keys (source)")
     this.db.run("CREATE INDEX IF NOT EXISTS document_keys_hash ON document_keys (hash)")
+    this.db.run(
+      "CREATE TABLE IF NOT EXISTS document_unreadable (name TEXT PRIMARY KEY, mtime INTEGER NOT NULL, size INTEGER NOT NULL)",
+    )
     await this.healKeyTable()
   }
 
@@ -138,34 +168,47 @@ export class FileStore implements Store {
    * created empty, above, while the documents it describes already exist on
    * disk. Trusting that emptiness would make `importDocument` miss every one
    * of them and write a duplicate for the first re-import of each. So: count
-   * the rows against how many documents actually parse (below) and rebuild
-   * from them the one time the counts disagree. Equal counts are trusted —
-   * the same trust the FTS `documents` index already gets without a recount
-   * on every open.
+   * the `*.md` names in `documents/` (a `readdir`, nothing parsed) against
+   * the rows that account for them, and rebuild the one time they disagree.
+   * Equal counts are trusted — the same trust the FTS `documents` index
+   * already gets without a recount on every open. This runs on every open
+   * (every `cairn mcp`, search, `cairn doctor`), which is why the normal path
+   * must never parse a document: that would make opening a space cost a read
+   * of the whole corpus.
    *
-   * Counted against documents that PARSED, not against the raw `*.md` names
-   * in `documents/`: a file that will never parse (see
-   * `listDocumentsTolerant`) would otherwise never earn a `document_keys`
-   * row, so the two counts would disagree forever and every single `init()`
-   * would redo the full rebuild it was supposed to need only once. Counting
-   * what parsed means a permanently broken file is counted out on both
-   * sides, and a corpus with no broken files sees no change at all.
+   * Every file is accounted for by one row in one of two tables: a
+   * `document_keys` row if it parsed when the table was last rebuilt, a
+   * `document_unreadable` row if it did not (see `rebuildKeyTable`). Counting
+   * only `document_keys` would leave a permanently broken file disagreeing
+   * forever and every open redoing the full rebuild. The unreadable rows
+   * carry each file's mtime and size, so the few files they name — and only
+   * those — are stat'ed here: one repaired, replaced or removed since it was
+   * recorded triggers the rebuild that re-reads it, which is how a fixed file
+   * earns its key row back and its unreadable row goes away.
    *
    * Two further limits this does not try to close. A corpus holding two
    * document files that happen to share one frontmatter `id` collapses to a
-   * single `document_keys` row (its primary key), so the row count sits
-   * below the parsed count forever and this rebuilds on every single
-   * `init()` rather than once — a pre-existing hazard of trusting
-   * frontmatter `id` at all, not one this table introduces. And this only
-   * runs at `init()`: a document another process adds to disk while this one
-   * is already open — an older cairn binary that writes files without
-   * keeping this index, or a second process racing this one — is invisible
-   * to `document_keys` until the next open, not the next write.
+   * single `document_keys` row (its primary key), so the counts disagree
+   * forever and this rebuilds on every single `init()` rather than once — a
+   * pre-existing hazard of trusting frontmatter `id` at all, not one this
+   * table introduces. And this only runs at `init()`: a document another
+   * process adds to disk while this one is already open — an older cairn
+   * binary that writes files without keeping this index, or a second process
+   * racing this one — is invisible to `document_keys` until the next open,
+   * not the next write.
    */
   private async healKeyTable(): Promise<void> {
+    const dir = join(this.root, "documents")
+    const names = (await readdir(dir)).filter((n) => n.endsWith(".md"))
     const { n } = this.db.query("SELECT count(*) AS n FROM document_keys").get() as { n: number }
-    const docs = await this.listDocumentsTolerant()
-    if (n !== docs.length) await this.rebuildKeyTable(docs)
+    const unreadable = this.db
+      .query("SELECT name, mtime, size FROM document_unreadable")
+      .all() as Unreadable[]
+    if (n + unreadable.length !== names.length) return this.rebuildKeyTable()
+    for (const row of unreadable) {
+      const now = await fingerprint(join(dir, row.name))
+      if (!now || now.mtime !== row.mtime || now.size !== row.size) return this.rebuildKeyTable()
+    }
   }
 
   private indexDocumentKey(doc: Document): void {
@@ -179,42 +222,60 @@ export class FileStore implements Store {
    * `listDocuments()`, tolerant of a file that will never parse — broken
    * frontmatter YAML, or a `created`/`updated` value `parseDocument` cannot
    * turn into a date. Retrying buys nothing for a file like that, so
-   * treating it the way `listDocuments()` does — throwing — would make one
-   * bad file a permanent block on `document_keys`: every `init()` on this
-   * root would die inside `healKeyTable`, every `matchDocumentKey` stale hit
-   * would die trying to re-derive the table, and `cairn mcp`, search and
-   * `cairn doctor`'s space check would die with them, forever, over a file
-   * nothing written here can fix. A skipped file is simply absent from the
-   * key table, exactly as if it did not exist — which for this table's
-   * purpose (finding a document by `source` or `hash` to decide whether an
-   * import is new) it may as well not.
+   * throwing the way `listDocuments()` does would make one bad file a
+   * permanent block on `document_keys`: every `init()` on this root would die
+   * inside the heal, every `matchDocumentKey` stale hit would die trying to
+   * re-derive the table, and `cairn mcp`, search and `cairn doctor`'s space
+   * check would die with them, over a file nothing written here can fix.
+   *
+   * A file skipped here is NOT treated as absent, though. It is returned in
+   * `unreadable`, with the mtime and size it had when read, and
+   * `rebuildKeyTable` records it in `document_unreadable`. It may well be a
+   * document some source was imported as — so `importDocument` refuses to
+   * create anything while such a row exists, rather than miss the broken
+   * file's key and write a duplicate of it. The space still opens and
+   * search still works; only a new document waits until the file is fixed or
+   * removed.
    *
    * Only the heal-and-rebuild path below uses this. `listDocuments()` itself
-   * is unchanged and still throws on a corrupt file for every other
-   * caller — search, `rebuildIndex`'s own FTS pass, the document contract
-   * suite — because a cache of documents may skip one it cannot read; the
-   * documents themselves are not a cache, and silently hiding one of those
-   * from, say, `cairn rebuild`'s count would be a different kind of lie.
+   * still throws on a corrupt file for every other caller — search,
+   * `rebuildIndex`'s own FTS pass, the document contract suite — because
+   * silently hiding a document from, say, `cairn rebuild`'s count would be a
+   * different kind of lie.
    */
-  private async listDocumentsTolerant(): Promise<Document[]> {
+  private async listDocumentsTolerant(): Promise<KeySnapshot> {
     const dir = join(this.root, "documents")
     const names = (await readdir(dir)).filter((n) => n.endsWith(".md"))
+    const unreadable: Unreadable[] = []
     const docs = await Promise.all(
-      names.map(async (n) => {
+      names.map(async (name) => {
+        const path = join(dir, name)
+        // Stat'ed BEFORE the read: an edit landing between the two then
+        // shows up as a changed fingerprint at the next open, never as a
+        // recorded fingerprint that already matches the edited file.
+        const before = await fingerprint(path)
+        if (!before) return null // removed mid-read: neither row, recounted next open
         try {
-          return parseDocument(await readFile(join(dir, n), "utf-8"))
+          return parseDocument(await readFile(path, "utf-8"))
         } catch {
+          unreadable.push({ name, ...before })
           return null
         }
       }),
     )
-    return docs.filter((d): d is Document => d !== null).sort((a, b) => b.created.localeCompare(a.created))
+    return {
+      docs: docs.filter((d): d is Document => d !== null).sort((a, b) => b.created.localeCompare(a.created)),
+      unreadable,
+    }
   }
 
   /**
-   * Replaces every row, optionally from a caller-supplied `docs` (so
-   * `rebuildIndex`, which already pays for one `listDocuments()` for the FTS
-   * table, does not pay for a second).
+   * Replaces every row of `document_keys` and `document_unreadable`,
+   * optionally from a caller-supplied snapshot (so `rebuildIndex`, which
+   * already pays for one `listDocuments()` for the FTS table, does not pay
+   * for a second — and, having read strictly, has no unreadable files to
+   * record). Both tables swap in the same transaction: the heal counts them
+   * together, so one replaced without the other would read as a mismatch.
    *
    * The read is resolved BEFORE anything is deleted, and the delete plus
    * every insert then run inside one synchronous `this.db.transaction`, with
@@ -239,16 +300,24 @@ export class FileStore implements Store {
    * `init()`. Folding those writes in, inside the same transaction and after
    * the snapshot, makes the freshest copy win either way.
    */
-  private async rebuildKeyTable(docs?: Document[]): Promise<void> {
+  private async rebuildKeyTable(snapshot?: KeySnapshot): Promise<void> {
     this.rebuildsInFlight++
     try {
-      const all = docs ?? (await this.listDocumentsTolerant())
-      const replace = this.db.transaction((rows: Document[]) => {
+      const { docs, unreadable } = snapshot ?? (await this.listDocumentsTolerant())
+      const replace = this.db.transaction(() => {
         this.db.run("DELETE FROM document_keys")
-        for (const doc of rows) this.indexDocumentKey(doc)
+        this.db.run("DELETE FROM document_unreadable")
+        for (const doc of docs) this.indexDocumentKey(doc)
         for (const doc of this.pendingRebuildWrites.values()) this.indexDocumentKey(doc)
+        for (const u of unreadable) {
+          this.db.run("INSERT OR REPLACE INTO document_unreadable (name, mtime, size) VALUES (?, ?, ?)", [
+            u.name,
+            u.mtime,
+            u.size,
+          ])
+        }
       })
-      replace(all)
+      replace()
     } finally {
       this.rebuildsInFlight--
       if (this.rebuildsInFlight === 0) this.pendingRebuildWrites.clear()
@@ -735,8 +804,8 @@ export class FileStore implements Store {
    * import O(n²). The key table holds exactly what the match needs, `source`
    * and `hash`, so each lookup is now one indexed query instead of a scan.
    * Kept honest four ways: written alongside every document
-   * (`writeDocument`), healed on `init()` by comparing its row count against
-   * how many documents on disk parse, rebuilt wholesale by `cairn rebuild`
+   * (`writeDocument`), healed on `init()` by comparing its row count (plus
+   * the files recorded as unreadable) against the files on disk, rebuilt wholesale by `cairn rebuild`
    * (`rebuildIndex`), and — the case those three miss, a document changed or
    * removed on disk between one `init()` and the next — re-derived from disk
    * the moment a lookup's row disagrees with the document it names
@@ -754,6 +823,16 @@ export class FileStore implements Store {
     const bySource =
       input.source === null ? null : await this.matchDocumentKey("source = ?", [input.source])
     const now = new Date().toISOString()
+
+    // Past this point the import either claims an adopted document or
+    // creates one. A file that would not parse when the key table was last
+    // rebuilt has no key row, so if it is THIS source's document (or the
+    // adopted copy of this text), neither lookup can see it and the import
+    // would write a duplicate of it. Refused loudly instead, naming the
+    // files, until they are fixed or removed — the next open notices either
+    // and re-reads them (`healKeyTable`). A source that did match above is
+    // safe to update: its document was found.
+    if (!bySource) this.refuseWhileUnreadable()
 
     if (bySource) {
       if (bySource.hash === hash) {
@@ -816,6 +895,18 @@ export class FileStore implements Store {
     await this.writeDocument(created)
     await this.events().append("import", created.id, { outcome: "created" })
     return { document: created, outcome: "created" }
+  }
+
+  private refuseWhileUnreadable(): void {
+    const rows = this.db.query("SELECT name FROM document_unreadable ORDER BY name").all() as {
+      name: string
+    }[]
+    if (rows.length === 0) return
+    const shown = rows.slice(0, 5).map((r) => r.name).join(", ")
+    const more = rows.length > 5 ? `, and ${rows.length - 5} more` : ""
+    throw new Error(
+      `could not check for an existing document — ${rows.length} document file(s) in ${join(this.root, "documents")} could not be read: ${shown}${more} — fix or remove them, then import again`,
+    )
   }
 
   private async writeDocument(doc: Document): Promise<void> {
@@ -932,7 +1023,7 @@ export class FileStore implements Store {
     // stale-hit rebuild, so a concurrent `importDocument` never observes the
     // key table empty while `cairn rebuild` is running.
     const docs = await this.listDocuments()
-    await this.rebuildKeyTable(docs)
+    await this.rebuildKeyTable({ docs, unreadable: [] })
     for (const doc of docs) {
       this.indexDocument(doc)
       documents++
