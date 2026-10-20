@@ -17,6 +17,8 @@ on:
       - "src/native/**"
       - "scripts/build-sqlite.sh"
       - ".github/workflows/native-selftest.yml"
+      - "package.json"
+      - "bun.lock"
 
 permissions:
   contents: read
@@ -75,10 +77,10 @@ jobs:
         include:
           - target: darwin-arm64
             os: macos-14
-          # Apple silicon runs the x64 binary under Rosetta.
+          # GitHub's Intel macOS runner, not Rosetta: Bun's non-baseline darwin-x64
+          # runtime uses AVX, which macOS 14's Rosetta does not provide.
           - target: darwin-x64
-            os: macos-14
-            prefix: arch -x86_64
+            os: macos-15-intel
           # In a bare container: no Homebrew, no node_modules, no system sqlite3.
           - target: linux-x64
             os: ubuntu-latest
@@ -89,13 +91,9 @@ jobs:
         with:
           name: ${{ inputs.binaries || 'selftest-binaries' }}
           path: bin
-      - if: matrix.prefix
-        name: Check Rosetta is installed
-        run: arch -x86_64 /usr/bin/true
       - name: cairn __selftest vec
         env:
           TARGET: ${{ matrix.target }}
-          PREFIX: ${{ matrix.prefix }}
           CONTAINER: ${{ matrix.container }}
         shell: bash
         run: |
@@ -111,11 +109,19 @@ jobs:
               ./cairn __selftest vec | tee out.txt
           else
             (cd "$dir" && env -i HOME="$dir" PATH=/usr/bin:/bin CAIRN_ROOT="$dir/root" \
-              $PREFIX ./cairn __selftest vec) | tee out.txt
+              ./cairn __selftest vec) | tee out.txt
           fi
           grep -qx 'fts5 bm25 ok' out.txt
+          # vec0 loading and the nearest-two query are separate steps: a target
+          # can print `vec v0.1.9` and then still fail with `vec unavailable:
+          # …` if the query itself breaks. Prefer that unavailable line, since
+          # it is the one that says vec0 did not end up usable.
+          vec_line=$(grep '^vec unavailable' out.txt | head -1)
+          if [ -z "$vec_line" ]; then
+            vec_line=$(grep '^vec ' out.txt | head -1)
+          fi
           {
             echo "| target | sqlite | vec |"
             echo "|---|---|---|"
-            echo "| $TARGET | $(grep '^sqlite ' out.txt) | $(grep '^vec ' out.txt | head -1) |"
+            echo "| $TARGET | $(grep '^sqlite ' out.txt) | $vec_line |"
           } >> "$GITHUB_STEP_SUMMARY"

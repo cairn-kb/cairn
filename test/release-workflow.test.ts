@@ -26,7 +26,12 @@ test("the linux build folds away the musl branch", async () => {
 const selftestWorkflow = () =>
   readFile(join(import.meta.dir, "..", ".github", "workflows", "native-selftest.yml"), "utf-8")
 
-type Job = { uses?: string; needs?: string | string[]; strategy?: { matrix?: { include?: { target?: string }[] } } }
+type Job = {
+  uses?: string
+  needs?: string | string[]
+  strategy?: { matrix?: { include?: { target?: string }[] } }
+  steps?: { run?: string }[]
+}
 const needsOf = (job: Job | undefined): string[] =>
   job?.needs === undefined ? [] : Array.isArray(job.needs) ? job.needs : [job.needs]
 
@@ -47,6 +52,17 @@ test("release calls the native self-test for every target before publishing", as
     (job.strategy?.matrix?.include ?? []).map((entry) => entry.target),
   )
   expect(targets).toEqual(expect.arrayContaining(["darwin-arm64", "darwin-x64", "linux-x64"]))
+})
+
+// A `gh release create` step added to the wrong job would publish from
+// unreviewed binaries, or publish twice. Only `publish` runs after both
+// `build` and `selftest`, so it is the only job allowed to call it.
+test("gh release create appears only in the publish job", async () => {
+  const release = Bun.YAML.parse(await workflow()) as { jobs: Record<string, Job> }
+  for (const [name, job] of Object.entries(release.jobs)) {
+    const calls = (job.steps ?? []).some((step) => (step.run ?? "").includes("gh release create"))
+    expect(calls).toBe(name === "publish")
+  }
 })
 
 test("the workflow test reads the real file rather than passing on an empty string", async () => {

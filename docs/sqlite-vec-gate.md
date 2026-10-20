@@ -29,15 +29,19 @@ embedded library, and a target without it degrades rather than breaks.
 
 ## Caveats
 
-- **Not yet run on GitHub's runners.** `native-selftest.yml` runs on a pull
-  request; none is open for this branch. It should be read as the
-  authoritative run once one is. Here linux-x64 ran under QEMU emulation on
-  arm64 rather than on an x64 host, and darwin-x64 ran under Rosetta, not on
-  Intel hardware.
+- **This local run is not the authoritative one.** The `native-selftest`
+  workflow on GitHub is: it runs per target on every pull request touching
+  the native loader and on every release, and its step summary records each
+  target's `sqlite`, `vec` and `fts5` result. Read that summary, not this
+  file, for the per-target gate result. Here linux-x64 ran under QEMU
+  emulation on arm64 rather than on an x64 host, and darwin-x64 ran under
+  Rosetta, not on Intel hardware — the workflow instead runs darwin-x64
+  natively on `macos-15-intel`, because Rosetta on macOS 14 lacks the AVX
+  support Bun's darwin-x64 runtime needs.
 - **Rosetta warns about AVX.** The darwin-x64 binary prints `warn: CPU lacks
   AVX support, strange crashes may occur` under Rosetta (Bun suggests its
-  `-baseline` build). The self-test still passed. This applies to the release's
-  darwin-x64 binary today and is independent of sqlite-vec.
+  `-baseline` build). The self-test still passed. This is why `native-selftest.yml`
+  runs darwin-x64 on an Intel runner rather than under Rosetta.
 - **Interpreted macOS gets Apple's SQLite too** on this machine (3.51.0, no
   extension loading). So `prepareSqlite` applies the embedded library on darwin
   whenever it exists, compiled or not, rather than only in a compiled binary;
@@ -184,9 +188,10 @@ fts5 bm25 ok
 
 ```
 $ bun test
- 967 pass
+ 1212 pass
+ 2 skip
  0 fail
-Ran 967 tests across 45 files.
+Ran 1214 tests across 55 files.
 $ bunx tsc --noEmit
 [exit 0]
 ```
