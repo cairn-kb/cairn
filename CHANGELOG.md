@@ -35,11 +35,15 @@
 ### Changed
 
 - `cairn init` in a terminal now proves each agent can start cairn, imports
-  the repository's docs (or sets your agent up to map the code), and shows a
-  first answer, signing you in first when you choose a team space (a doc it
+  the repository's docs — and, with fewer than three, also installs a
+  `cairn-import` skill so your agent can map the code — and shows a first
+  answer, signing you in first when you choose a team space (a doc it
   can't read or store is named and skipped, and the rest still import); `--yes`,
   scripts and `--dry-run` work as before, and `--dry-run` now also shows what
   would be imported.
+- If you already ran `cairn import` on a repository, running the new
+  `cairn init` there imports its docs a second time, under new sources named
+  after the repository, so each one appears twice in your space.
 
 ### Fixed
 

@@ -135,13 +135,16 @@ what it cannot check — Cursor's project approval, and that a running agent
 needs a restart. It offers to import the repository's docs (README, `docs/`,
 ADRs and other `.md` files outside dependency and build folders), lets you
 drop folders or add more, and runs one search over them to show a first
-answer. With fewer than three docs in a local space it installs a
-`cairn-import` skill for your agents instead and tells you what to say —
-`map this repo for cairn` — offering to start Claude Code with it. Choosing a
-team space signs you in first and confirms before importing anything your
-team will see. Every write is previewed and confirmed first. In a terminal,
-project scope means the git repository you are in, wherever inside it you run
-`init`.
+answer. With fewer than three docs in a local space it imports what there is
+and also installs a `cairn-import` skill so your agents can map the code —
+`.claude/skills/cairn-import/SKILL.md` for Claude Code (`~/.claude/skills/...`
+with `--global`), `.cursor/rules/cairn-import.mdc` for Cursor at project
+scope, and `~/.agents/skills/cairn-import/SKILL.md` for Codex — then tells you
+what to say, `map this repo for cairn`, offering to start Claude Code with it.
+Choosing a team space signs you in first and confirms before importing
+anything your team will see. Every write is previewed and confirmed first. In
+a terminal, project scope means the git repository you are in, wherever inside
+it you run `init`.
 
 Pass `--local` or `--team` to skip the mode question, and `--project` or
 `--global` to skip the scope one — scripted onboarding needs both, plus
@@ -157,8 +160,8 @@ local, and a local root holding anything goes through the migration below.
 |---|---|---|
 | Claude Code | `.mcp.json` | `~/.claude.json` |
 | Cursor | `.cursor/mcp.json` + `.cursor/rules/cairn.mdc` | `~/.cursor/mcp.json`, rules printed |
-| Codex | `~/.codex/config.toml` | `~/.codex/config.toml` + `~/.codex/AGENTS.md` |
-| Claude Desktop | its `claude_desktop_config.json`, rules printed | the same |
+| Codex | `~/.codex/config.toml`, in a terminal only | `~/.codex/config.toml` + `~/.codex/AGENTS.md` |
+| Claude Desktop | its `claude_desktop_config.json`, rules printed, in a terminal only | its `claude_desktop_config.json`, rules printed |
 | Instructions | `AGENTS.md`, or your existing `CLAUDE.md` | `~/.claude/CLAUDE.md` |
 
 **Instructions go in one file, never two.** An existing `AGENTS.md` wins, an
