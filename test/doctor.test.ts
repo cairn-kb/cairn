@@ -26,6 +26,9 @@ afterEach(async () => {
 
 const deps = (over: Partial<DoctorDeps> = {}): DoctorDeps => ({
   home, cwd, root,
+  // The CLAUDE.md walk stops here, so nothing above the temp project — the
+  // real home directory included — can change a result.
+  ceiling: cwd,
   execPath: "/bin/cairn",
   handshake: async () => ["team_knowledge_map", "team_knowledge_propose", "team_knowledge_read", "team_knowledge_search", "team_knowledge_write_document"],
   env: {},
@@ -318,6 +321,78 @@ test("a CLAUDE.md that is a symlink to AGENTS.md, which has the block, passes", 
   const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
   expect(r.status).toBe("ok")
   expect(r.detail).toContain("same file")
+})
+
+// Claude Code reads AGENTS.md only when no CLAUDE.md, .claude/CLAUDE.md or
+// CLAUDE.local.md exists in the working directory or above it. A block that
+// only AGENTS.md carries is then never read.
+const BLOCK = "notes\n<!-- cairn:start -->\nrules\n<!-- cairn:end -->\n"
+
+test("Claude Code with the block only in AGENTS.md and a CLAUDE.md beside it fails", async () => {
+  await writeFile(join(cwd, "AGENTS.md"), BLOCK, "utf-8")
+  await writeFile(join(cwd, "CLAUDE.md"), "# notes\n", "utf-8")
+  await writeMcp(cairnEntry())
+  const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
+  expect(r.status).toBe("fail")
+  expect(r.detail).toContain(join(cwd, "CLAUDE.md"))
+  expect(r.fix).toContain("Claude Code won't read AGENTS.md while a CLAUDE.md exists here or above")
+  expect(r.fix).toContain("cairn init")
+})
+
+test("a CLAUDE.md in a parent directory hides the project's AGENTS.md too", async () => {
+  const outer = await mkdtemp(join(tmpdir(), "cairn-outer-"))
+  try {
+    const project = join(outer, "work", "project")
+    await mkdir(project, { recursive: true })
+    await writeFile(join(outer, "CLAUDE.md"), "# everything I work on\n", "utf-8")
+    await writeFile(join(project, "AGENTS.md"), BLOCK, "utf-8")
+    await writeFile(join(project, ".mcp.json"), JSON.stringify({ mcpServers: { cairn: cairnEntry() } }), "utf-8")
+    const r = await checkInstructions(deps({ cwd: project, ceiling: outer }), join(project, ".mcp.json"))
+    expect(r.status).toBe("fail")
+    expect(r.detail).toContain(join(outer, "CLAUDE.md"))
+  } finally {
+    await rm(outer, { recursive: true, force: true })
+  }
+})
+
+test("a parent's .claude/CLAUDE.md hides it from a global Claude Code install", async () => {
+  const outer = await mkdtemp(join(tmpdir(), "cairn-outer-"))
+  try {
+    const project = join(outer, "project")
+    await mkdir(join(outer, ".claude"), { recursive: true })
+    await mkdir(project)
+    await writeFile(join(outer, ".claude", "CLAUDE.md"), "# mine\n", "utf-8")
+    await writeFile(join(project, "AGENTS.md"), BLOCK, "utf-8")
+    await writeFile(join(home, ".claude.json"), JSON.stringify({ mcpServers: { cairn: cairnEntry() } }), "utf-8")
+    const r = await checkInstructions(deps({ cwd: project, ceiling: outer }), join(home, ".claude.json"))
+    expect(r.status).toBe("fail")
+  } finally {
+    await rm(outer, { recursive: true, force: true })
+  }
+})
+
+test("Claude Code with the block in AGENTS.md and no CLAUDE.md anywhere passes", async () => {
+  await writeFile(join(cwd, "AGENTS.md"), BLOCK, "utf-8")
+  await writeMcp(cairnEntry())
+  const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
+  expect(r.status).toBe("ok")
+})
+
+test("Claude Code with a CLAUDE.md that imports AGENTS.md passes", async () => {
+  await writeFile(join(cwd, "AGENTS.md"), BLOCK, "utf-8")
+  await writeFile(join(cwd, "CLAUDE.md"), "# notes\n@./AGENTS.md\n", "utf-8")
+  await writeMcp(cairnEntry())
+  const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
+  expect(r.status).toBe("ok")
+})
+
+test("without Claude Code, a CLAUDE.md beside AGENTS.md does not matter", async () => {
+  await mkdir(join(cwd, ".cursor"), { recursive: true })
+  await writeFile(join(cwd, "AGENTS.md"), BLOCK, "utf-8")
+  await writeFile(join(cwd, "CLAUDE.md"), "# notes\n", "utf-8")
+  await writeFile(join(cwd, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { cairn: cairnEntry() } }), "utf-8")
+  const r = await checkInstructions(deps(), join(cwd, ".cursor", "mcp.json"))
+  expect(r.status).toBe("ok")
 })
 
 test("telemetry with no config reports not configured", async () => {

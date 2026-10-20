@@ -1,6 +1,6 @@
 import { access, readFile, stat } from "node:fs/promises"
 import { constants } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { readConfig } from "./config"
@@ -52,6 +52,11 @@ export interface DoctorDeps {
   appData?: string
   /** Runs git, to find the repository containing `cwd`. Defaults to the real one. */
   git?: GitRunner
+  /**
+   * The highest directory searched for a CLAUDE.md above `cwd`. Defaults to
+   * the filesystem root; tests set it so the machine's own files cannot leak in.
+   */
+  ceiling?: string
 }
 
 export const EXPECTED_TOOLS = [
@@ -357,6 +362,36 @@ async function isCursorOnlyGlobal(deps: DoctorDeps, configPath?: string): Promis
   return !(await isDir(join(deps.home, ".claude")))
 }
 
+/** Whether Claude Code is the agent the found MCP config belongs to. */
+async function claudeCodeConfigured(deps: DoctorDeps, configPath?: string): Promise<boolean> {
+  const repoRoot = (await findRepo(deps.cwd, deps.git))?.root
+  const project = [join(deps.cwd, ".mcp.json"), ...(repoRoot ? [join(repoRoot, ".mcp.json")] : [])]
+  if (configPath !== undefined && project.includes(configPath)) return true
+  try {
+    const text = await readFile(join(deps.home, ".claude.json"), "utf-8")
+    return Boolean((JSON.parse(text) as { mcpServers?: Record<string, unknown> }).mcpServers?.cairn)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The first file that makes Claude Code skip AGENTS.md: a CLAUDE.md,
+ * .claude/CLAUDE.md or CLAUDE.local.md in `cwd` or any directory above it.
+ * <https://code.claude.com/docs/en/memory#agents-md>
+ */
+async function hidingClaudeMd(deps: DoctorDeps): Promise<string | null> {
+  let dir = deps.cwd
+  for (;;) {
+    for (const name of ["CLAUDE.md", join(".claude", "CLAUDE.md"), "CLAUDE.local.md"]) {
+      const path = join(dir, name)
+      if (await stat(path).then((s) => s.isFile(), () => false)) return path
+    }
+    if (dir === deps.ceiling || dirname(dir) === dir) return null
+    dir = dirname(dir)
+  }
+}
+
 export async function checkInstructions(
   deps: DoctorDeps,
   configPath?: string,
@@ -386,16 +421,27 @@ export async function checkInstructions(
     join(deps.cwd, ".cursor", "rules", "cairn.mdc"),
     join(deps.home, ".claude", "CLAUDE.md"),
   ]
-  for (const path of candidates) {
-    try {
-      if ((await readFile(path, "utf-8")).includes("<!-- cairn:start -->")) {
-        return {
-          name: "instructions", group: "Agent config", status: "ok",
-          detail: `${path} has the cairn instructions block`,
-        }
+  // Missing files are not an error here; absence across all of them is.
+  const withBlock: string[] = []
+  for (const path of candidates) if (await hasBlock(path)) withBlock.push(path)
+  if (withBlock.length === 1 && withBlock[0] === agentsMd && (await claudeCodeConfigured(deps, configPath))) {
+    // Reaching here means the project's CLAUDE.md neither imports AGENTS.md
+    // nor is the same file — both cases returned above.
+    const hiding = await hidingClaudeMd(deps)
+    if (hiding !== null) {
+      return {
+        name: "instructions", group: "Agent config", status: "fail",
+        detail: `${agentsMd} has the cairn instructions block, but Claude Code skips it because ${hiding} exists`,
+        fix:
+          "Claude Code won't read AGENTS.md while a CLAUDE.md exists here or above — " +
+          "re-run cairn init to add an @AGENTS.md import to this project's CLAUDE.md",
       }
-    } catch {
-      // Missing file is not an error here; absence across all of them is.
+    }
+  }
+  if (withBlock.length > 0) {
+    return {
+      name: "instructions", group: "Agent config", status: "ok",
+      detail: `${withBlock[0]} has the cairn instructions block`,
     }
   }
   if (await isCursorOnlyGlobal(deps, configPath)) {
