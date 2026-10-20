@@ -27,7 +27,7 @@ afterEach(async () => {
 const deps = (over: Partial<DoctorDeps> = {}): DoctorDeps => ({
   home, cwd, root,
   execPath: "/bin/cairn",
-  handshake: async () => ["team_knowledge_map", "team_knowledge_propose", "team_knowledge_read", "team_knowledge_search"],
+  handshake: async () => ["team_knowledge_map", "team_knowledge_propose", "team_knowledge_read", "team_knowledge_search", "team_knowledge_write_document"],
   env: {},
   ...over,
 })

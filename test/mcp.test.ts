@@ -16,6 +16,7 @@ import {
   MAP_DESCRIPTION,
   PROPOSE_DESCRIPTION,
   SERVER_INSTRUCTIONS,
+  TEAM_WRITE_REFUSAL,
   type KbTools,
 } from "../src/mcp"
 import { FileStore } from "../src/store"
@@ -336,7 +337,7 @@ test("frontmatter claiming approval does not escape the inbox", async () => {
   expect((await store.get("forged"))!.status).toBe("pending")
 })
 
-test("createMcpServer registers exactly the five expected tools and enforces the read gate end to end", async () => {
+test("createMcpServer registers exactly the six expected tools and enforces the read gate end to end", async () => {
   const store = new FileStore(root, log)
   await store.init()
   const server = createMcpServer(store, log)
@@ -361,6 +362,7 @@ test("createMcpServer registers exactly the five expected tools and enforces the
     "team_knowledge_propose",
     "team_knowledge_read",
     "team_knowledge_search",
+    "team_knowledge_write_document",
   ])
 
   const proposeResult = await client.callTool({
@@ -893,4 +895,167 @@ test("a retracted claim is gone from search and from the map", async () => {
   expect(hits.some((h) => h.id === claim.id)).toBe(false)
   const { entries: map } = await tools.kbMap({ session: "session-1" })
   expect(map.some((e) => e.id === claim.id)).toBe(false)
+})
+
+// --- generated documents and team_knowledge_write_document ----------------
+
+test("a search hit on a generated document reports generated and its repo", async () => {
+  await store.importDocument({
+    title: "Overview",
+    text: "Checkout service architecture Zylophant",
+    source: "generated:checkout/architecture",
+    generated: true,
+    repo: "checkout",
+  })
+  const hit = (await tools.kbSearch("Zylophant")).hits.find((h) => h.kind === "document")
+  expect(hit && "generated" in hit && hit.generated).toBe(true)
+  expect(hit && "repo" in hit && hit.repo).toBe("checkout")
+})
+
+test("a search hit on an imported document reports generated: false, repo: null", async () => {
+  await store.importDocument({ title: "Notes", text: "Swampbuzzard notes", source: "notes.md" })
+  const hit = (await tools.kbSearch("Swampbuzzard")).hits.find((h) => h.kind === "document")
+  expect(hit && "generated" in hit && hit.generated).toBe(false)
+  expect(hit && "repo" in hit && hit.repo).toBe(null)
+})
+
+test("a document read on a generated document reports generated and its repo", async () => {
+  const { document } = await store.importDocument({
+    title: "Overview",
+    text: "text",
+    source: "generated:app/architecture",
+    generated: true,
+    repo: "app",
+  })
+  const [read] = await tools.kbRead([document.id])
+  expect(read && "generated" in read && read.generated).toBe(true)
+  expect(read && "repo" in read && read.repo).toBe("app")
+})
+
+test("a document read on an imported document reports generated: false, repo: null", async () => {
+  const { document } = await store.importDocument({ title: "d", text: "t", source: "d.md" })
+  const [read] = await tools.kbRead([document.id])
+  expect(read && "generated" in read && read.generated).toBe(false)
+  expect(read && "repo" in read && read.repo).toBe(null)
+})
+
+test("kbWriteDocument creates a generated document tagged with its repo", async () => {
+  const out = await tools.kbWriteDocument({
+    repo: "app",
+    slug: "architecture",
+    title: "App architecture",
+    text: "How the app is put together.",
+    agent: "cursor",
+  })
+  expect(out.outcome).toBe("created")
+  const doc = await store.getDocument(out.id)
+  expect(doc?.source).toBe("generated:app/architecture")
+  expect(doc?.generated).toBe(true)
+  expect(doc?.repo).toBe("app")
+})
+
+test("writing the same repo and slug again replaces the document in place", async () => {
+  const first = await tools.kbWriteDocument({
+    repo: "app",
+    slug: "architecture",
+    title: "App architecture",
+    text: "First draft.",
+    agent: "cursor",
+  })
+  const second = await tools.kbWriteDocument({
+    repo: "app",
+    slug: "architecture",
+    title: "App architecture",
+    text: "Second draft.",
+    agent: "cursor",
+  })
+  expect(second.outcome).toBe("updated")
+  expect(second.id).toBe(first.id)
+  const doc = await store.getDocument(second.id)
+  expect(doc?.text).toBe("Second draft.")
+})
+
+test("kbWriteDocument refuses a slug that climbs out of its directory, naming the field", async () => {
+  await expect(
+    tools.kbWriteDocument({ repo: "app", slug: "../x", title: "t", text: "t", agent: "cursor" }),
+  ).rejects.toThrow(/slug/)
+})
+
+test("kbWriteDocument refuses a slug that is not lowercase kebab-case, naming the field", async () => {
+  await expect(
+    tools.kbWriteDocument({ repo: "app", slug: "Arch", title: "t", text: "t", agent: "cursor" }),
+  ).rejects.toThrow(/slug/)
+})
+
+test("kbWriteDocument refuses a repo containing a path separator, naming the field", async () => {
+  await expect(
+    tools.kbWriteDocument({ repo: "a/b", slug: "x", title: "t", text: "t", agent: "cursor" }),
+  ).rejects.toThrow(/repo/)
+})
+
+test("kbWriteDocument refuses an empty title, naming the field", async () => {
+  await expect(
+    tools.kbWriteDocument({ repo: "app", slug: "x", title: "  ", text: "t", agent: "cursor" }),
+  ).rejects.toThrow(/title/)
+})
+
+test("kbWriteDocument refuses empty text, naming the field", async () => {
+  await expect(
+    tools.kbWriteDocument({ repo: "app", slug: "x", title: "t", text: "   ", agent: "cursor" }),
+  ).rejects.toThrow(/text/)
+})
+
+test("kbWriteDocument writes nothing on a validation refusal", async () => {
+  await expect(
+    tools.kbWriteDocument({ repo: "app", slug: "Arch", title: "t", text: "t", agent: "cursor" }),
+  ).rejects.toThrow()
+  expect(await store.listDocuments()).toEqual([])
+})
+
+test("team_knowledge_write_document is refused in team mode, and writes nothing", async () => {
+  const server = createMcpServer(store, log, { mode: "team" })
+  const client = await (async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    const c = new Client({ name: "test-client", version: "0.0.0" })
+    await Promise.all([server.connect(serverTransport), c.connect(clientTransport)])
+    return c
+  })()
+
+  const result = await client.callTool({
+    name: "team_knowledge_write_document",
+    arguments: { repo: "app", slug: "architecture", title: "t", text: "t", agent: "cursor" },
+  })
+  expect(result.isError).toBe(true)
+  expect((result.content as { text: string }[])[0]!.text).toBe(TEAM_WRITE_REFUSAL)
+  expect(await store.listDocuments()).toEqual([])
+  await client.close()
+})
+
+test("team_knowledge_write_document works when mode defaults to local", async () => {
+  const server = createMcpServer(store, log)
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  const client = new Client({ name: "test-client", version: "0.0.0" })
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+
+  const result = await client.callTool({
+    name: "team_knowledge_write_document",
+    arguments: { repo: "app", slug: "architecture", title: "t", text: "t", agent: "cursor" },
+  })
+  expect(result.isError).toBeFalsy()
+  const parsed = JSON.parse((result.content as { text: string }[])[0]!.text) as { outcome: string }
+  expect(parsed.outcome).toBe("created")
+  await client.close()
+})
+
+test("onSearchResult is called with the hit count, from the server handler only", async () => {
+  await store.importDocument({ title: "d", text: "Quetzalcoatl", source: "d.md" })
+  const seen: number[] = []
+  const server = createMcpServer(store, log, { onSearchResult: async (n) => { seen.push(n) } })
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  const client = new Client({ name: "test-client", version: "0.0.0" })
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+
+  await client.callTool({ name: "team_knowledge_search", arguments: { query: "Quetzalcoatl" } })
+  expect(seen).toEqual([1])
+  await client.close()
 })

@@ -49,6 +49,7 @@ export const EXPECTED_TOOLS = [
   "team_knowledge_propose",
   "team_knowledge_read",
   "team_knowledge_search",
+  "team_knowledge_write_document",
 ]
 
 /** How much of a child's stderr is worth keeping for one line of a report. */
