@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { COMPILED } from "./version"
 import { desktopConfigPath, detectAgents } from "./agents"
-import { mergeCodexConfig } from "./codex-config"
+import { codexBlock, mergeCodexConfig } from "./codex-config"
 import type { Agent } from "./agents"
 
 export type { Agent } from "./agents"
@@ -43,6 +43,13 @@ export interface InitOptions {
   platform?: NodeJS.Platform
   /** `%APPDATA%`, which Claude Desktop's config path is under on Windows. */
   appData?: string
+  /**
+   * Whether a person is at a terminal running this (no `--yes`). Without one,
+   * project scope leaves the machine-wide Codex and Claude Desktop configs
+   * alone: a script asked to set up one project must not edit files in the
+   * home directory. Defaults to false.
+   */
+  interactive?: boolean
 }
 
 export interface InitResult {
@@ -182,6 +189,12 @@ export interface InitPlan {
   printOnly: string[]
   warnings: string[]
   /**
+   * Agents that were found but deliberately left unconfigured: Codex and
+   * Claude Desktop on a non-interactive project-scope run, whose configs are
+   * machine-wide.
+   */
+  notConfigured: Agent[]
+  /**
    * What the operator still has to do themselves, printed after the write.
    * Distinct from `warnings`, which are about what cairn did: these are the
    * steps cairn cannot take and — for Cursor's per-project approval — cannot
@@ -206,13 +219,31 @@ export function cursorInstallLink(entry: McpServerEntry, name = "cairn"): string
   return `cursor://anysphere.cursor-deeplink/mcp/install?name=${name}&config=${encodeURIComponent(config)}`
 }
 
+/** Agents with one config for the whole machine rather than one per project. */
+const MACHINE_WIDE: readonly Agent[] = ["codex", "claude-desktop"]
+
+/** Told to the person when cairn cannot safely edit an agent's config itself. */
+function handEdit(path: string, block: string): string {
+  return (
+    `cairn couldn't edit ${path} (it may use syntax cairn can't safely edit) — add the cairn server by hand:\n\n` +
+    block.replace(/^/gm, "    ")
+  )
+}
+
 export async function planInit(opts: InitOptions): Promise<InitPlan> {
   const { home, cwd, cliPath, scope, bunPath } = opts
   const platform = opts.platform ?? process.platform
-  const detected = await detectAgents(home, platform, opts.appData)
+  const found = await detectAgents(home, platform, opts.appData)
   const printOnly: string[] = []
   const warnings: string[] = []
   const nextSteps: string[] = []
+
+  // Project scope from a script edits the project and nothing else. Codex and
+  // Claude Desktop keep one config for every project, in the home directory,
+  // so they are configured by a person at a terminal or by --global.
+  const notConfigured =
+    scope === "project" && opts.interactive !== true ? found.filter((a) => MACHINE_WIDE.includes(a)) : []
+  const detected = found.filter((a) => !notConfigured.includes(a))
 
   // Detection looks at the home directory, but project scope writes
   // <cwd>/.mcp.json and the instructions file — paths whose correctness has
@@ -222,7 +253,7 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
   // Global scope keeps the gate, because the files it writes ARE the agent's
   // own and inventing one there configures software that is not installed.
   const assumed = detected.length === 0 && scope === "project" && opts.writeWithoutAgent === true
-  const agents: Agent[] = assumed ? ["claude"] : detected
+  let agents: Agent[] = assumed ? ["claude"] : detected
   if (assumed) {
     warnings.push(
       `No supported agent found in ${home} — writing a project config anyway, as --project asked. ` +
@@ -248,7 +279,9 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
     )
   }
   // Compute every change before writing any of it, so a config we cannot parse
-  // aborts the whole run rather than leaving half of it applied.
+  // aborts the whole run rather than leaving half of it applied. Codex and
+  // Claude Desktop are the exception: a config of theirs cairn cannot edit
+  // skips that agent, with the entry to add by hand, and the rest goes ahead.
   const pending: { path: string; content: string }[] = []
   const configs: { agent: Agent; path: string }[] = []
   const gitignore: string[] = []
@@ -289,18 +322,38 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
     nextSteps.push(`One-click install for Cursor: ${cursorInstallLink(entry)}`)
   }
 
-  // Codex has one config for every project, so it is written at either scope.
+  // Codex has one config for every project, so it is written at either scope —
+  // except by a script at project scope (see `notConfigured` above).
   if (agents.includes("codex")) {
     const cfg = join(home, ".codex", "config.toml")
-    pending.push({ path: cfg, content: mergeCodexConfig(await read(cfg), entry) })
-    configs.push({ agent: "codex", path: cfg })
+    const text = await read(cfg)
+    let content: string | null = null
+    try {
+      content = mergeCodexConfig(text, entry)
+    } catch {
+      warnings.push(handEdit(cfg, codexBlock(entry)))
+      agents = agents.filter((a) => a !== "codex")
+    }
+    if (content !== null) {
+      pending.push({ path: cfg, content })
+      configs.push({ agent: "codex", path: cfg })
+    }
   }
 
   // Claude Desktop likewise has only an app-wide config. Detection found the
   // directory holding it, so the path cannot be null here.
   const desktopCfg = desktopConfigPath(home, platform, opts.appData)
+  let desktopContent: string | null = null
   if (agents.includes("claude-desktop") && desktopCfg) {
-    pending.push({ path: desktopCfg, content: mergeMcpConfig(await read(desktopCfg), entry) })
+    try {
+      desktopContent = mergeMcpConfig(await read(desktopCfg), entry)
+    } catch {
+      warnings.push(handEdit(desktopCfg, JSON.stringify({ mcpServers: { cairn: entry } }, null, 2)))
+      agents = agents.filter((a) => a !== "claude-desktop")
+    }
+  }
+  if (desktopContent !== null && desktopCfg) {
+    pending.push({ path: desktopCfg, content: desktopContent })
     configs.push({ agent: "claude-desktop", path: desktopCfg })
     printOnly.push(
       "Claude Desktop has no instructions file — paste the block below into a Claude project's " +
@@ -336,7 +389,10 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
     if (merged !== (await read(gi))) pending.push({ path: gi, content: merged })
   }
 
-  return { agents, scope, changes: pending, configs, printOnly, warnings, nextSteps, instructions: RULES_BLOCK }
+  return {
+    agents, scope, changes: pending, configs, printOnly, warnings, notConfigured, nextSteps,
+    instructions: RULES_BLOCK,
+  }
 }
 
 /**

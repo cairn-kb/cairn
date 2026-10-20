@@ -532,7 +532,7 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
   const plan = await planInit({
     home: d.home, cwd: projectDir, cliPath: d.cliPath, scope,
     dryRun: d.dryRun, bunPath: d.bunPath, execPath: d.execPath, cairnRoot: d.root,
-    writeWithoutAgent: d.writeWithoutAgent,
+    writeWithoutAgent: d.writeWithoutAgent, interactive: d.interactive,
   })
   // Independent of plan.agents, which can hold an assumed agent nothing was
   // actually detected for (see planInit's --project fallback) — the operator
@@ -540,8 +540,22 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
   const found = await detectAgents(d.home)
 
   for (const w of plan.warnings) d.out(`${ui.warn(w)}\n`)
+  // One line, and only when there is something to say: a script's output is
+  // otherwise exactly what it was before cairn knew about either agent.
+  if (plan.notConfigured.length > 0) {
+    const names = listJoin(plan.notConfigured.map((a) => AGENT_LABEL[a]))
+    const them = plan.notConfigured.length === 1 ? "it" : "them"
+    d.out(
+      ui.warn(
+        `Found ${names}, whose config is machine-wide — run \`cairn init\` in a terminal, ` +
+          `or with \`--global\`, to configure ${them}.`,
+      ),
+    )
+  }
 
   if (plan.agents.length === 0) {
+    // Something was found, and what is left to say about it is said above.
+    if (found.length > 0) return "no-agent"
     d.out(ui.warn("No supported agent found."))
     d.out(ui.dim(`  Looked for ~/.claude, ~/.cursor, ~/.codex and Claude Desktop in ${d.home}.`))
     // Naming the escape is the whole point: this used to stop here, and
