@@ -237,6 +237,27 @@ export interface DocumentInput {
   repo?: string
 }
 
+/**
+ * Everything an agent decides when writing a generated document through
+ * `Store.writeGenerated` — the MCP write path, as distinct from `cairn
+ * import`'s `DocumentInput`, which a file on disk fills in.
+ *
+ * `repo` and `slug` together name the slot: `generatedSource(repo, slug)`
+ * (packages/protocol/src/generated.ts) is the document's `source`, so writing
+ * again with the same pair updates the same document rather than creating a
+ * second one. `agent` travels on the input but is not part of what the store
+ * checks before writing — a generated document is refused for being
+ * machine-written over a human one, or for not being machine-written at all,
+ * never for which agent is asking (see `generatedRefusalMessage`).
+ */
+export interface GeneratedDocumentInput {
+  repo: string
+  slug: string
+  title: string
+  text: string
+  agent: string
+}
+
 /** What importing a document did to the store: a fresh id, a changed hash on
  *  an id already held, or neither. */
 export type ImportOutcome = "created" | "updated" | "unchanged"
@@ -424,6 +445,23 @@ export interface Store {
    * file whose content has not moved since the last import.
    */
   importDocument(input: DocumentInput): Promise<ImportDocumentResult>
+  /**
+   * Write a generated document — an agent's own overview, not a file on
+   * disk — in place at `generatedSource(input.repo, input.slug)`
+   * (packages/protocol/src/generated.ts), creating or updating it the same
+   * way `importDocument` does for an imported file.
+   *
+   * Refuses rather than silently overwriting in two cases
+   * (`generatedRefusalMessage` names both, among the others only the hosted
+   * store can reach): `input` fails `validateGenerated` (bad slug, bad repo,
+   * or text over `MAX_GENERATED_TEXT_BYTES`), or a document already holds
+   * that source and is NOT `generated` — writing there would silently
+   * replace a human document with a machine's. The check is only ever
+   * whether the existing row is generated, never who wrote it: a second
+   * agent updating a document a first agent generated is the ordinary case,
+   * not a conflict.
+   */
+  writeGenerated(input: GeneratedDocumentInput): Promise<ImportDocumentResult>
   /**
    * Turn an imported claim into the document it always was, and delete the
    * claim. The only operation on this seam that deletes an approved claim —

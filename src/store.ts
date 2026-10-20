@@ -6,6 +6,7 @@ import { makeId, parseClaim, serializeClaim } from "./claims"
 import { makeDocId, parseDocument, serializeDocument } from "./documents"
 import type { EventSink, Stats } from "./events"
 import { ftsQuery } from "./search-query"
+import { generatedRefusalMessage, generatedSource, validateGenerated } from "@cairn-kb/protocol/generated"
 import { hashText } from "@cairn-kb/protocol/hash"
 import { STATUSES } from "@cairn-kb/protocol/types"
 import type {
@@ -14,6 +15,7 @@ import type {
   Claim,
   Document,
   DocumentInput,
+  GeneratedDocumentInput,
   ImportDocumentResult,
   ProposeInput,
   Status,
@@ -638,6 +640,44 @@ export class FileStore implements Store {
   private async writeDocument(doc: Document): Promise<void> {
     await writeFile(this.docPath(doc.id), serializeDocument(doc), "utf-8")
     this.indexDocument(doc)
+  }
+
+  /**
+   * Write a generated document in place at `generatedSource(repo, slug)`.
+   *
+   * `validateGenerated` catches a bad slug, a bad repo or text over the byte
+   * limit before anything is read. The one refusal only a store can decide —
+   * `source_not_generated` — is checked here: a document already holds that
+   * source and is not `generated`, which would mean this write silently
+   * replacing a human document with a machine's. The check is only ever
+   * whether the existing row is generated, never who wrote it: a second
+   * agent overwriting a document a first agent generated is the ordinary
+   * case `writeGenerated` exists to allow, same as a re-`cairn import` of a
+   * changed file.
+   *
+   * Once past both guards this is `importDocument` under the synthetic
+   * source, exactly as `cairn import` writes a document under a file's path
+   * — same created/updated/outcome bookkeeping, no separate code path to
+   * drift from it.
+   */
+  async writeGenerated(input: GeneratedDocumentInput): Promise<ImportDocumentResult> {
+    const code = validateGenerated(input)
+    if (code) throw new Error(generatedRefusalMessage(code))
+    const source = generatedSource(input.repo, input.slug)
+    // O(n) over the corpus, the same trade `importDocument`'s own
+    // source-match already makes (see that method's comment) — this store is
+    // built for tens of documents, not thousands.
+    const existing = (await this.listDocuments()).find((d) => d.source === source)
+    if (existing && !existing.generated) {
+      throw new Error(generatedRefusalMessage("source_not_generated"))
+    }
+    return this.importDocument({
+      title: input.title,
+      text: input.text,
+      source,
+      generated: true,
+      repo: input.repo,
+    })
   }
 
   /**

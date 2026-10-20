@@ -1,6 +1,6 @@
 {
   "name": "@cairn-kb/protocol",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The wire contract between the cairn CLI and a cairn team space.",
   "license": "Apache-2.0",
   "type": "module",
@@ -17,6 +17,7 @@
     "./hash": "./src/hash.ts",
     "./document-title": "./src/document-title.ts",
     "./provenance": "./src/provenance.ts",
+    "./generated": "./src/generated.ts",
     "./package.json": "./package.json"
   },
   "files": ["src", "README.md", "LICENSE", "NOTICE"],

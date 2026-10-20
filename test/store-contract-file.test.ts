@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { generatedRefusalMessage, generatedSource } from "@cairn-kb/protocol/generated"
 import { EventLog } from "../src/events"
 import { FileStore } from "../src/store"
 import { CONTRACT_CASES, DOCUMENT_CONTRACT_CASES, type ContractLog, type ExpectFn } from "./store-contract"
@@ -49,3 +50,81 @@ for (const c of [...CONTRACT_CASES, ...DOCUMENT_CONTRACT_CASES]) {
     }
   })
 }
+
+/**
+ * `writeGenerated` only, held here rather than in `./store-contract`:
+ * `HttpStore` cannot write a generated document until the hosted side does
+ * (Task 11 moves these into the shared contract once it can), so a FileStore-
+ * only test file is where this belongs until then.
+ */
+async function withFileStore(run: (store: FileStore) => Promise<void>): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), "cairn-contract-"))
+  const log = new EventLog(root)
+  const store = new FileStore(root, log)
+  await store.init()
+  try {
+    await run(store)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
+test("FileStore: writeGenerated creates a generated document at the generated source", async () => {
+  await withFileStore(async (store) => {
+    const { document, outcome } = await store.writeGenerated({
+      repo: "app",
+      slug: "architecture",
+      title: "Architecture",
+      text: "a small overview",
+      agent: "cursor",
+    })
+    expect(outcome).toBe("created")
+    expect(document.source).toBe(generatedSource("app", "architecture"))
+    expect(document.generated).toBe(true)
+    expect(document.repo).toBe("app")
+    expect(document.text).toBe("a small overview")
+  })
+})
+
+test("FileStore: writeGenerated twice with the same slug updates in place", async () => {
+  await withFileStore(async (store) => {
+    const first = await store.writeGenerated({
+      repo: "app",
+      slug: "architecture",
+      title: "Architecture",
+      text: "version one",
+      agent: "cursor",
+    })
+    const second = await store.writeGenerated({
+      repo: "app",
+      slug: "architecture",
+      title: "Architecture",
+      text: "version two",
+      agent: "cursor",
+    })
+    expect(second.outcome).toBe("updated")
+    expect(second.document.id).toBe(first.document.id)
+    expect(second.document.text).toBe("version two")
+  })
+})
+
+test("FileStore: writeGenerated refuses to replace a human document", async () => {
+  await withFileStore(async (store) => {
+    const source = generatedSource("app", "architecture")
+    await store.importDocument({ title: "Arch", text: "human", source })
+    let message: string | null = null
+    try {
+      await store.writeGenerated({
+        repo: "app",
+        slug: "architecture",
+        title: "Architecture",
+        text: "a machine's overview",
+        agent: "cursor",
+      })
+    } catch (err) {
+      message = (err as Error).message
+    }
+    expect(message).toBe(generatedRefusalMessage("source_not_generated"))
+    expect((await store.getDocument((await store.listDocuments())[0]!.id))!.text).toBe("human")
+  })
+})

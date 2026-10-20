@@ -672,6 +672,7 @@ function fakeStore(over: Partial<Store>): Store {
     getDocument: async () => unsupported("getDocument"),
     searchDocuments: async () => unsupported("searchDocuments"),
     importDocument: async () => unsupported("importDocument"),
+    writeGenerated: async () => unsupported("writeGenerated"),
     adoptImport: async () => unsupported("adoptImport"),
     ...over,
   }
