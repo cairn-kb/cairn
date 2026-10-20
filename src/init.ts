@@ -264,6 +264,13 @@ export interface InitPlan {
    *  so it adds nothing to `configs`, and a plan of it alone is still a plan. */
   otherClient: boolean
   /**
+   * Whether a `printOnly` note tells the person to paste "the block below" —
+   * true only where no file cairn writes carries the rules. Not the same as
+   * having notes: a note that only hands over a config would otherwise sit
+   * right above the rules, which then read as part of what to paste.
+   */
+  pasteRules: boolean
+  /**
    * What the operator still has to do themselves, printed after the write.
    * Distinct from `warnings`, which are about what cairn did: these are the
    * steps cairn cannot take and — for Cursor's per-project approval — cannot
@@ -361,6 +368,7 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
   const pending: { path: string; content: string }[] = []
   const configs: { agent: Agent; path: string }[] = []
   const gitignore: string[] = []
+  let pasteRules = false
 
   if (agents.includes("claude")) {
     const cfg = scope === "global" ? join(home, ".claude.json") : join(cwd, ".mcp.json")
@@ -392,6 +400,7 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
       printOnly.push(
         "Cursor keeps user rules in its settings, not a file — paste the block below into Cursor → Settings → Rules.",
       )
+      pasteRules = true
     }
     // Printed only when Cursor is actually present: a Claude-Code-only machine
     // cannot open a `cursor://` URL and should not be handed one.
@@ -439,6 +448,7 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
       "Claude Desktop has no instructions file — paste the block below into a Claude project's " +
         "instructions (Projects → your project → Instructions).",
     )
+    pasteRules = true
     // Closing the window leaves the app running, and it reads its MCP config
     // only at launch — so the new server does not appear until a real restart.
     nextSteps.push("Quit Claude Desktop completely (Cmd+Q, or Quit from its tray icon) and reopen it to load cairn.")
@@ -452,13 +462,13 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
         JSON.stringify({ mcpServers: { cairn: entry } }, null, 2),
     )
     // Project scope gives it the shared instructions file below; global scope
-    // has none, so it gets the block to paste — the same block every note
-    // here points at.
+    // has none, so it gets the block to paste.
     if (scope === "global") {
       printOnly.push(
         "Another MCP client has no shared instructions file at global scope — paste the block below " +
           "into its instructions.",
       )
+      pasteRules = true
     }
   }
 
@@ -519,7 +529,7 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
   }
 
   return {
-    agents, scope, changes: pending, configs, printOnly, warnings, notConfigured, otherClient, nextSteps,
+    agents, scope, changes: pending, configs, printOnly, warnings, notConfigured, otherClient, pasteRules, nextSteps,
     instructions: RULES_BLOCK,
   }
 }

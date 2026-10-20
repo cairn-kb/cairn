@@ -12,7 +12,8 @@
 ### Changed
 
 - `cairn init` no longer configures Claude Desktop unless asked with
-  `--agents claude-desktop`.
+  `--agents claude-desktop`, which is what `cairn doctor` now suggests on a
+  machine where Claude Desktop is the only agent installed.
 
 ### Fixed
 

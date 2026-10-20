@@ -502,6 +502,12 @@ const OTHER_CLIENT_LABEL = "Other MCP client"
 
 /** How an interactive run ends when at least one agent proved it can start cairn. */
 export const INIT_OUTRO = "Restart your agent, then run `cairn doctor`"
+/**
+ * How a run of the other MCP client alone ends, in a terminal or not. Doctor
+ * knows only the configs cairn writes, so pointing this run at it would fail
+ * and send the person back to `cairn init`.
+ */
+export const OTHER_OUTRO = "Add the server config above to your MCP client, then restart it"
 /** How it ends when none could: a success line there would be false. */
 export const INIT_OUTRO_UNPROVEN =
   "None of your agents could start cairn — fix the ✗ above, then run cairn doctor"
@@ -509,6 +515,16 @@ export const INIT_OUTRO_UNPROVEN =
 /** The team-mode fill confirmation, word for word. */
 export function teamImportMessage(n: number, space: string): string {
   return `these ${n} documents will be visible to everyone in ${space}`
+}
+
+/** What to say when no agent init offers is installed. */
+function printNoAgent(d: InitCommandDeps): void {
+  d.out(ui.warn("No supported agent found."))
+  d.out(ui.dim(`  Looked for ~/.claude, ~/.cursor and ~/.codex in ${d.home}.`))
+  // Naming the escape is the whole point: this used to stop here, and
+  // doctor's remedy was `cairn init`, which arrives back at this line.
+  d.out(ui.dim("  Install Claude Code, Cursor or Codex, or run `cairn init --project`"))
+  d.out(ui.dim("  to write a project config anyway, or `cairn init --agents <agent>` to name one."))
 }
 
 /** "A", "A and B", "A, B and C". */
@@ -548,7 +564,13 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
   const picked = d.interactive && !choice && !d.dryRun && d.chooseAgents !== undefined
   if (picked) {
     choice = await d.chooseAgents!(found)
-    if (choice === null || (choice.agents.length === 0 && !choice.other)) return "cancelled"
+    if (choice === null) return "cancelled"
+    if (choice.agents.length === 0 && !choice.other) {
+      // With nothing found, choosing nothing is a dead end rather than a
+      // decision — so say what would get past it.
+      if (found.length === 0) printNoAgent(d)
+      return "cancelled"
+    }
   }
 
   const repo = d.repo ?? null
@@ -572,7 +594,7 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
     d.out(
       ui.warn(
         `Found ${names}, whose config is machine-wide — run \`cairn init\` in a terminal, ` +
-          `or with \`--global\`, to configure ${them}.`,
+          `or with \`--global\` or \`--agents ${plan.notConfigured.join(",")}\`, to configure ${them}.`,
       ),
     )
   }
@@ -581,12 +603,7 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
     // Something was found, or chosen, and what is left to say about it is
     // said above.
     if (found.length > 0 || choice) return "no-agent"
-    d.out(ui.warn("No supported agent found."))
-    d.out(ui.dim(`  Looked for ~/.claude, ~/.cursor and ~/.codex in ${d.home}.`))
-    // Naming the escape is the whole point: this used to stop here, and
-    // doctor's remedy was `cairn init`, which arrives back at this line.
-    d.out(ui.dim("  Install Claude Code, Cursor or Codex, or run `cairn init --project`"))
-    d.out(ui.dim("  to write a project config anyway."))
+    printNoAgent(d)
     return "no-agent"
   }
 
@@ -607,11 +624,11 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
   )
   for (const c of plan.changes) d.out(`  ${ui.skip(ui.dim(c.path))}`)
 
-  // Every note, then the block they all point at — once, not once per note.
+  // Every note, then the block the paste notes point at — once, not once per note.
   plan.printOnly.forEach((note, i) => {
     d.out(`\n${ui.warn(note)}${i === plan.printOnly.length - 1 ? "\n" : ""}`)
   })
-  if (plan.printOnly.length > 0) d.out(plan.instructions.replace(/^/gm, "    "))
+  if (plan.pasteRules) d.out(plan.instructions.replace(/^/gm, "    "))
 
   const existing = await readConfig(d.root)
 
@@ -779,7 +796,13 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
     d.root,
     existing ? { ...existing, telemetry, mode, auth } : { ...newConfig(telemetry), mode, auth },
   )
-  if (!d.interactive) return "written"
+  // Nothing init wrote is something doctor can check for the other MCP
+  // client alone, so that run gets a step that works instead.
+  const otherOnly = plan.configs.length === 0 && plan.otherClient
+  if (!d.interactive) {
+    d.out(otherOnly ? `\n${OTHER_OUTRO}` : `\n${ui.dim("Restart your agent, then")} cairn doctor`)
+    return "written"
+  }
 
   const proofs = await printProofs(d, plan)
   // Launching Claude Code is only worth offering once it has shown it can
@@ -801,8 +824,7 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
   // far as cairn can tell. But a run whose every agent failed to start cairn
   // must not close the way a working one does. A run of the other MCP client
   // alone had nothing to prove, which is not the same as failing to.
-  const nothingToProve = plan.configs.length === 0 && plan.otherClient
-  ;(d.outro ?? d.out)(anyProven || nothingToProve ? INIT_OUTRO : INIT_OUTRO_UNPROVEN)
+  ;(d.outro ?? d.out)(otherOnly ? OTHER_OUTRO : anyProven ? INIT_OUTRO : INIT_OUTRO_UNPROVEN)
   return "written"
 }
 
@@ -2523,8 +2545,8 @@ export async function main(argv: string[]): Promise<void> {
         process.exit(1)
       }
       if (outcome === "written") {
-        // An interactive run has already closed itself through `outro`.
-        if (!interactive) console.log(`\n${ui.dim("Restart your agent, then")} cairn doctor`)
+        // An interactive run has already closed itself through `outro`, and a
+        // scripted one through runInitCommand's own closing line.
         // After the closing line rather than before it, so the clack rail
         // still ends where clack ends it — `outro` draws the `└` that closes
         // the box, and rows printed into the middle of that break it. This is

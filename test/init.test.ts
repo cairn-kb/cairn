@@ -778,6 +778,24 @@ test("the other MCP client alongside Claude Code adds its note to Claude Code's 
   }
 })
 
+test("the rules block is printed only when a note asks for it to be pasted", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  await mkdir(join(home, ".config", "Claude"), { recursive: true })
+  try {
+    const paste = async (o: Parameters<typeof planInit>[0]) => (await planInit(o)).pasteRules
+    // Written to the project's instructions file: nothing to paste.
+    expect(await paste({ ...opts(repo, "project"), agents: [], otherClient: true })).toBe(false)
+    expect(await paste({ ...opts(repo, "project"), agents: ["claude", "cursor"] })).toBe(false)
+    expect(await paste({ ...opts(home, "global"), agents: ["claude"] })).toBe(false)
+    // No file holds them for these.
+    expect(await paste({ ...opts(home, "global"), agents: [], otherClient: true })).toBe(true)
+    expect(await paste({ ...opts(home, "global"), agents: ["cursor"] })).toBe(true)
+    expect(await paste({ ...opts(repo, "project"), agents: ["claude-desktop"] })).toBe(true)
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
 // --- Claude Code and a project's AGENTS.md ----------------------------------
 //
 // Claude Code reads AGENTS.md only when no CLAUDE.md exists in the working

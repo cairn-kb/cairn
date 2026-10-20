@@ -2,8 +2,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { runInitCommand, teamImportMessage, type InitCommandDeps } from "../src/cli"
+import { dirname, join } from "node:path"
+import { desktopConfigPath } from "../src/agents"
+import { OTHER_OUTRO, runInitCommand, teamImportMessage, type InitCommandDeps } from "../src/cli"
 import { newConfig, readConfig, writeConfig, type AuthConfig } from "../src/config"
 import { EXPECTED_TOOLS } from "../src/doctor"
 import { EventLog } from "../src/events"
@@ -163,9 +164,8 @@ test("the picker is offered what was found, and its answer is what gets configur
   await writeDocs(repoRoot, FOUR)
   await mkdir(join(home, ".cursor"), { recursive: true })
   // Detected but never offered: Claude Desktop is configured only by name.
-  if (process.platform === "darwin") {
-    await mkdir(join(home, "Library", "Application Support", "Claude"), { recursive: true })
-  }
+  const desktop = desktopConfigPath(home, process.platform, process.env.APPDATA)
+  if (desktop) await mkdir(dirname(desktop), { recursive: true })
   const offered: string[] = []
   const outcome = await runInitCommand(
     await deps({
@@ -197,6 +197,8 @@ test("choosing nothing in the picker cancels the run with nothing written", asyn
   const outcome = await runInitCommand(await deps({ chooseAgents: async () => ({ agents: [], other: false }) }))
   expect(outcome).toBe("cancelled")
   expect(await footprint()).toEqual(before)
+  // Claude Code was found, so choosing nothing was a choice, not a dead end.
+  expect(said()).not.toContain("No supported agent found")
 })
 
 test("choosing only the other MCP client writes the instructions and prints the config", async () => {
@@ -207,8 +209,37 @@ test("choosing only the other MCP client writes the instructions and prints the 
   expect(existsSync(join(repoRoot, ".mcp.json"))).toBe(false)
   expect(said()).toContain("For another MCP client, add this server to its MCP config:")
   expect(said()).toContain("Other MCP client")
-  // Nothing to prove is not the same as nothing proven.
+  // The rules are in AGENTS.md already; printed under the config, they read
+  // as part of what to paste.
+  expect(said()).not.toContain("call team_knowledge_map")
+  // Nothing to prove is not the same as nothing proven — and doctor cannot
+  // see another client's config, so the ending must not send anyone there.
   expect(said()).not.toContain("None of your agents could start cairn")
+  expect(said()).not.toContain("cairn doctor")
+  expect(said()).toContain(OTHER_OUTRO)
+})
+
+test("a scripted run of the other MCP client alone ends without pointing at doctor", async () => {
+  const outcome = await runInitCommand(
+    await deps({ interactive: false, repo: null, agentsFlag: { agents: [], other: true } }),
+  )
+  expect(outcome).toBe("written")
+  expect(said()).not.toContain("cairn doctor")
+  expect(said()).toContain(OTHER_OUTRO)
+})
+
+test("a scripted run that configured an agent still ends by pointing at doctor", async () => {
+  expect(await runInitCommand(await deps({ interactive: false, repo: null }))).toBe("written")
+  expect(said()).toContain("cairn doctor")
+})
+
+test("choosing nothing on a machine where nothing was found says what would work", async () => {
+  await rm(join(home, ".claude"), { recursive: true, force: true })
+  const outcome = await runInitCommand(await deps({ chooseAgents: async () => ({ agents: [], other: false }) }))
+  expect(outcome).toBe("cancelled")
+  expect(said()).toContain("No supported agent found")
+  expect(said()).toContain("--project")
+  expect(said()).toContain("--agents")
 })
 
 test("--agents skips the picker", async () => {
@@ -587,6 +618,7 @@ test("--yes at project scope leaves Codex alone and says so in exactly one line"
   expect(extra[0]).toContain("Codex")
   expect(extra[0]).toContain("cairn init")
   expect(extra[0]).toContain("--global")
+  expect(extra[0]).toContain("--agents codex")
   expect(await readdir(join(home, ".codex"))).toEqual([])
 })
 
