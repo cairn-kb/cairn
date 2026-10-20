@@ -108,6 +108,73 @@ export class FileStore implements Store {
     this.db.run(
       "CREATE VIRTUAL TABLE IF NOT EXISTS documents USING fts5(id UNINDEXED, title, text, source UNINDEXED)",
     )
+    this.db.run(
+      "CREATE TABLE IF NOT EXISTS document_keys (id TEXT PRIMARY KEY, source TEXT, hash TEXT NOT NULL, created TEXT NOT NULL)",
+    )
+    this.db.run("CREATE INDEX IF NOT EXISTS document_keys_source ON document_keys (source)")
+    this.db.run("CREATE INDEX IF NOT EXISTS document_keys_hash ON document_keys (hash)")
+    await this.healKeyTable()
+  }
+
+  /**
+   * An `index.db` written before `document_keys` existed has no such table —
+   * created empty, above, while the documents it describes already exist on
+   * disk. Trusting that emptiness would make `importDocument` miss every one
+   * of them and write a duplicate for the first re-import of each. So: count
+   * the rows against the `*.md` names in `documents/` (a `readdir`, no
+   * parsing, so this stays cheap on every `init()`) and rebuild from
+   * `listDocuments()` the one time they disagree. Equal counts are trusted —
+   * the same trust the FTS `documents` index already gets without a recount
+   * on every open.
+   */
+  private async healKeyTable(): Promise<void> {
+    const { n } = this.db.query("SELECT count(*) AS n FROM document_keys").get() as { n: number }
+    const dir = join(this.root, "documents")
+    const names = (await readdir(dir)).filter((name) => name.endsWith(".md"))
+    if (n !== names.length) await this.rebuildKeyTable()
+  }
+
+  private indexDocumentKey(doc: Document): void {
+    this.db.run(
+      "INSERT OR REPLACE INTO document_keys (id, source, hash, created) VALUES (?, ?, ?, ?)",
+      [doc.id, doc.source, doc.hash, doc.created],
+    )
+  }
+
+  private async rebuildKeyTable(): Promise<void> {
+    this.db.run("DELETE FROM document_keys")
+    for (const doc of await this.listDocuments()) {
+      this.indexDocumentKey(doc)
+    }
+  }
+
+  /**
+   * The newest `document_keys` row matching `where` (`ORDER BY created DESC
+   * LIMIT 1`, the same sort `listDocuments()` used plus `find()`'s "first hit
+   * wins"), loaded as a `Document` — or null, for no row.
+   *
+   * A row whose document is gone, or whose `source`/`hash` no longer agrees
+   * with what the row says, means the key table drifted from disk — a
+   * document file removed or hand-edited underneath the index, between one
+   * `init()` and the next. Rebuilt from disk and re-asked exactly once rather
+   * than trusted: trusting it risks matching a document that no longer holds
+   * what the row claims, and skipping it with no rebuild risks a duplicate
+   * the next line down would otherwise create.
+   */
+  private async matchDocumentKey(
+    where: string,
+    params: (string | null)[],
+    rebuilt = false,
+  ): Promise<Document | null> {
+    const row = this.db
+      .query(`SELECT id, source, hash FROM document_keys WHERE ${where} ORDER BY created DESC LIMIT 1`)
+      .get(...params) as { id: string; source: string | null; hash: string } | null
+    if (!row) return null
+    const doc = await this.getDocument(row.id)
+    if (doc && doc.source === row.source && doc.hash === row.hash) return doc
+    if (rebuilt) return null
+    await this.rebuildKeyTable()
+    return this.matchDocumentKey(where, params, true)
   }
 
   private path(status: Status, id: string): string {
@@ -551,27 +618,28 @@ export class FileStore implements Store {
    * by `hash` among sourceless (adopted) documents, then create. Reversing the
    * first two would let one edited file claim an unrelated adopted document.
    *
-   * **O(n) per call, so a full-corpus import is O(n²)** — `listDocuments()`
-   * reads and parses every document on disk to find one. Deliberate, and
-   * recorded here because this file's convention is to say why rather than to
-   * leave a reader wondering whether it was noticed: the matching
-   * is on `source` and on `hash`, neither of which the JSONL-plus-files layout
-   * indexes, and the corpus this was built for is tens of documents, not
-   * thousands. The hosted service indexes these and does not share the shape.
-   * If a local space ever grows enough for this to bite, the fix is an index
-   * on those two columns, not a different match order — the order is the part
-   * that must not move.
+   * Looked up through `document_keys`, not `listDocuments()` — that read and
+   * parsed every document on disk to find one, which made a full-corpus
+   * import O(n²). The key table holds exactly what the match needs, `source`
+   * and `hash`, so each lookup is now one indexed query instead of a scan.
+   * Kept honest four ways: written alongside every document (`writeDocument`),
+   * healed on `init()` by comparing its row count against the `*.md` names on
+   * disk, rebuilt wholesale by `cairn rebuild` (`rebuildIndex`), and — the
+   * case those three miss, a document changed or removed on disk between one
+   * `init()` and the next — re-derived from disk the moment a lookup's row
+   * disagrees with the document it names (`matchDocumentKey`), so a stale hit
+   * never falls back to a silent duplicate.
    */
   async importDocument(input: DocumentInput): Promise<ImportDocumentResult> {
     const hash = await hashText(input.text)
-    const all = await this.listDocuments()
-    // Never for a source-less input: `d.source === input.source` would be
-    // `null === null` and claim whatever adopted document happened to be
-    // first, regardless of its text. A source-less import has no path to match
-    // ON, so it goes straight to the hash branch below -- which is the branch
-    // that is CORRECT for it. (The hosted service behaves the same way: a null
-    // source never matches.)
-    const bySource = input.source === null ? undefined : all.find((d) => d.source === input.source)
+    // Never for a source-less input: `source = ?` with a null parameter would
+    // match whatever adopted document happened to be newest, regardless of
+    // its text. A source-less import has no path to match ON, so it goes
+    // straight to the hash branch below -- which is the branch that is
+    // CORRECT for it. (The hosted service behaves the same way: a null source
+    // never matches.)
+    const bySource =
+      input.source === null ? null : await this.matchDocumentKey("source = ?", [input.source])
     const now = new Date().toISOString()
 
     if (bySource) {
@@ -605,7 +673,9 @@ export class FileStore implements Store {
     // has reappeared with a path. Matching on hash alone there would let a
     // generated overview silently claim a human's adopted document the first
     // time the two happened to produce identical bytes.
-    const adopted = input.generated ? undefined : all.find((d) => d.source === null && d.hash === hash)
+    const adopted = input.generated
+      ? null
+      : await this.matchDocumentKey("source IS NULL AND hash = ?", [hash])
     if (adopted) {
       const { generated: _g2, repo: _r2, ...adoptedRest } = adopted
       const claimed: Document = {
@@ -638,6 +708,7 @@ export class FileStore implements Store {
   private async writeDocument(doc: Document): Promise<void> {
     await writeFile(this.docPath(doc.id), serializeDocument(doc), "utf-8")
     this.indexDocument(doc)
+    this.indexDocumentKey(doc)
   }
 
   /**
@@ -698,6 +769,7 @@ export class FileStore implements Store {
     if (!found) {
       await unlink(this.docPath(doc.id))
       this.db.run("DELETE FROM documents WHERE id = ?", [doc.id])
+      this.db.run("DELETE FROM document_keys WHERE id = ?", [doc.id])
       throw new Error(unknownClaimMessage(claimId))
     }
     await unlink(found.path)
@@ -729,6 +801,7 @@ export class FileStore implements Store {
   async rebuildIndex(): Promise<{ claims: number; documents: number }> {
     this.db.run("DELETE FROM claims")
     this.db.run("DELETE FROM documents")
+    this.db.run("DELETE FROM document_keys")
     let claims = 0
     let documents = 0
     for (const status of STATUSES) {
@@ -739,6 +812,7 @@ export class FileStore implements Store {
     }
     for (const doc of await this.listDocuments()) {
       this.indexDocument(doc)
+      this.indexDocumentKey(doc)
       documents++
     }
     return { claims, documents }

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Importing into a local space no longer slows down as the space grows —
+  each document is found through an index instead of by reading every
+  stored document.
+
 ## [0.9.1] — 2026-10-20
 
 ### Added

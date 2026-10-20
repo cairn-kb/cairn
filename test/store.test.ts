@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, expect, test } from "bun:test"
-import { appendFile, mkdtemp, rename, rm } from "node:fs/promises"
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
+import { appendFile, mkdtemp, rename, rm, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { notAdoptableMessage } from "@cairn-kb/protocol/event-kinds"
@@ -234,6 +234,52 @@ test("a generated write creates its own document rather than adopting an unrelat
   const refreshedHuman = await store.getDocument(human.id)
   expect(refreshedHuman?.source).toBeNull()
   expect(refreshedHuman?.generated ?? false).toBe(false)
+})
+
+// --- importDocument is indexed, not a full scan ---------------------------
+//
+// `listDocuments()` reads and parses every document on disk. The whole point
+// of `document_keys` is that `importDocument`'s normal path never has to.
+
+test("importDocument never reads every document to find one", async () => {
+  const spy = spyOn(store, "listDocuments")
+  for (let i = 0; i < 30; i++) {
+    await store.importDocument({ title: `T${i}`, text: `text ${i}`, source: `${i}.md` })
+  }
+  expect(spy).not.toHaveBeenCalled()
+})
+
+test("an index.db from before the key table self-heals instead of duplicating", async () => {
+  await store.importDocument({ title: "T", text: "same text", source: "a.md" })
+  await store.importDocument({ title: "U", text: "other text", source: "b.md" })
+  // The shape an older cairn left behind: an index.db with no document_keys
+  // table at all, while the documents it describes already exist on disk.
+  ;(store as unknown as { db: { run(sql: string): void } }).db.run("DROP TABLE document_keys")
+  const fresh = new FileStore(root, new EventLog(root))
+  await fresh.init()
+  const a = await fresh.importDocument({ title: "T", text: "same text", source: "a.md" })
+  const b = await fresh.importDocument({ title: "U", text: "other text", source: "b.md" })
+  expect(a.outcome).toBe("unchanged")
+  expect(b.outcome).toBe("unchanged")
+  expect((await fresh.listDocuments()).length).toBe(2)
+})
+
+test("a document file deleted by hand is recreated, not thrown on, by the next import of its source", async () => {
+  const { document } = await store.importDocument({ title: "T", text: "same text", source: "a.md" })
+  await unlink(join(root, "documents", `${document.id}.md`))
+  const result = await store.importDocument({ title: "T", text: "same text", source: "a.md" })
+  expect(result.outcome).toBe("created")
+  expect(result.document.id).not.toBe(document.id)
+  expect((await store.listDocuments()).length).toBe(1)
+})
+
+test("rebuildIndex restores the key table", async () => {
+  const { document } = await store.importDocument({ title: "T", text: "same text", source: "a.md" })
+  ;(store as unknown as { db: { run(sql: string): void } }).db.run("DELETE FROM document_keys")
+  await store.rebuildIndex()
+  const result = await store.importDocument({ title: "T", text: "same text", source: "a.md" })
+  expect(result.outcome).toBe("unchanged")
+  expect(result.document.id).toBe(document.id)
 })
 
 // --- adoptImport coverage the generic Store contract cannot exercise ------
