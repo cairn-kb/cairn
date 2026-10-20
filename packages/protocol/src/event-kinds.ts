@@ -22,8 +22,8 @@ export const RESOLVE_KINDS: readonly EventKind[] = ["approve", "edit", "reject"]
  * first version of this guard was an allow list — every event on the claim had
  * to be `import`, `generate` or `curate` — which quietly made every imported
  * claim an agent had ever READ un-adoptable, because `read` carries the
- * claim's id on both stores (`src/mcp.ts` logs it with the id, and the hosted
- * service records it against the claim too). The population `adopt-imports`
+ * claim's id on both stores (`packages/mcp/src/tools.ts` logs it with the id,
+ * and the hosted service records it against the claim too). The population `adopt-imports`
  * exists for is exactly the material agents are told to read, so the more the
  * tool was used the less of the knowledge base could be converted. An allow list has to be told about every observational kind
  * anyone ever adds; a deny list only has to be told about kinds that mean a

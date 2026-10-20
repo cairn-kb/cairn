@@ -5,8 +5,9 @@
     "": {
       "name": "@cairn-kb/cli",
       "dependencies": {
-        "@cairn-kb/protocol": "^0.2.0",
         "@anthropic-ai/sdk": "^0.121.0",
+        "@cairn-kb/mcp": "^0.1.0",
+        "@cairn-kb/protocol": "^0.3.0",
         "@clack/prompts": "^1.7.0",
         "@modelcontextprotocol/sdk": "^1.30.0",
         "@opentui/core": "0.5.9",
@@ -19,15 +20,31 @@
         "@types/bun": "^1.4.0",
       },
     },
+    "packages/mcp": {
+      "name": "@cairn-kb/mcp",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cairn-kb/protocol": "^0.3.0",
+        "@modelcontextprotocol/sdk": "^1.30.0",
+      },
+      "devDependencies": {
+        "zod": "^4.4.3",
+      },
+      "peerDependencies": {
+        "zod": "^4.4.3",
+      },
+    },
     "packages/protocol": {
       "name": "@cairn-kb/protocol",
-      "version": "0.2.0",
+      "version": "0.3.0",
     },
   },
   "packages": {
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.121.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-WFzwcH8l49CZHv0vQ9QQT51VJ1/DLDQfNSs9awpGlnKBdaSnqtdZa+tw/3cxxosTPIgK8uw1GqsJ2dSbCBD1Lg=="],
 
     "@babel/runtime": ["@babel/runtime@7.29.10", "", {}, "sha512-NpugTzbKgGrNe45Ui32cN8vCFFMxVtP/9rtfwv0nP5FRDAjvYBxJcLVpYA9mr1jxP6cnIT7x9LUzuDTbWYYNRA=="],
+
+    "@cairn-kb/mcp": ["@cairn-kb/mcp@workspace:packages/mcp"],
 
     "@cairn-kb/protocol": ["@cairn-kb/protocol@workspace:packages/protocol"],
 

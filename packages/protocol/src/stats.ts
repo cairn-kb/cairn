@@ -22,6 +22,25 @@ export type EventKind =
   | "read"
   | "search"
   /**
+   * A remote MCP session starting.
+   *
+   * Observational, like `read` and `search`: a connection is something an
+   * agent does unattended, not a human decision, so it appears in NEITHER
+   * `APPROVE_KINDS` nor `RESOLVE_KINDS` — counting it as either would credit a
+   * review that never happened.
+   */
+  | "connect"
+  /**
+   * A machine writing a generated document (`Store.writeGenerated`), as
+   * distinct from `generate`, which is a model writing a claim's abstract.
+   *
+   * Appears in NEITHER `APPROVE_KINDS` nor `RESOLVE_KINDS`, for the same
+   * reason `import` does: a document that enters the space this way was
+   * never reviewed, and counting it as a review would credit a human
+   * decision nobody made.
+   */
+  | "generate_document"
+  /**
    * A claim leaving the space by becoming a document, not by being judged.
    *
    * Adoption REMOVES a claim — the only operation in this system that deletes

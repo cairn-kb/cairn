@@ -230,8 +230,8 @@ function browsingStyled(entries: LegendEntry[], trailer: string): StyledText {
  *
  * Two functions rather than one generic one. They route to different store
  * methods on the `doc-` prefix the ids already carry, and collapsing them would
- * mean a lookup that falls back on a miss — the thing `kbRead` (src/mcp.ts)
- * deliberately does not do.
+ * mean a lookup that falls back on a miss — the thing `kbRead`
+ * (packages/mcp/src/tools.ts) deliberately does not do.
  */
 async function resolveRefs<T>(
   ids: string[],

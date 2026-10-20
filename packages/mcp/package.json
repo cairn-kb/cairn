@@ -1,0 +1,28 @@
+{
+  "name": "@cairn-kb/mcp",
+  "version": "0.1.0",
+  "description": "The cairn MCP tools, served over stdio by the cairn CLI and over HTTP by the hosted service.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cairn-kb/cairn.git",
+    "directory": "packages/mcp"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "files": ["src", "README.md", "LICENSE", "NOTICE"],
+  "publishConfig": { "access": "public" },
+  "dependencies": {
+    "@cairn-kb/protocol": "^0.3.0",
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "zod": "^4.4.3"
+  }
+}

@@ -4,11 +4,9 @@ import { makeId } from "./claims"
 import { titleOf as titleFrom } from "@cairn-kb/protocol/document-title"
 import type { Document } from "@cairn-kb/protocol/types"
 
-/** How much of a document one `team_knowledge_read` returns. Characters, not
- *  tokens, which keeps this independent of any one model's tokenizer. */
-export const READ_WINDOW = 4000
-/** How much of a document a search hit shows. */
-export const PREVIEW_CHARS = 240
+// Moved to @cairn-kb/mcp, which shapes what read and search hand an agent on
+// both transports; re-exported so every existing caller keeps working.
+export { PREVIEW_CHARS, READ_WINDOW, previewOf, windowOf } from "@cairn-kb/mcp"
 
 /** Built exactly as a claim id is, then prefixed. The prefix is load-bearing:
  *  it is how a read path tells the two nouns apart from an id alone. */
@@ -64,20 +62,6 @@ export function parseImport(raw: string, path: string): { title: string; text: s
  *  produces the same source. */
 export function normalizeSource(dir: string, path: string): string {
   return relative(dir, path).split(sep).join("/")
-}
-
-export function previewOf(doc: Document): string {
-  return `${doc.title} — ${doc.text.slice(0, PREVIEW_CHARS)}`
-}
-
-export function windowOf(
-  text: string,
-  offset: number,
-): { text: string; offset: number; length: number; nextOffset: number | null } {
-  const start = Math.max(0, Math.min(offset, text.length))
-  const slice = text.slice(start, start + READ_WINDOW)
-  const end = start + slice.length
-  return { text: slice, offset: start, length: text.length, nextOffset: end < text.length ? end : null }
 }
 
 export function serializeDocument(doc: Document): string {

@@ -16,6 +16,7 @@ import {
   unknownClaimMessage,
   unknownDocumentMessage,
 } from "@cairn-kb/protocol/event-kinds"
+import { generatedRefusalMessage } from "@cairn-kb/protocol/generated"
 import type { EventKind, EventSink, KbEvent, Stats, EventInput } from "./events"
 import { ftsQuery } from "./search-query"
 import type {
@@ -23,6 +24,7 @@ import type {
   Claim,
   Document,
   DocumentInput,
+  GeneratedDocumentInput,
   ImportDocumentResult,
   ProposeInput,
   Status,
@@ -328,6 +330,17 @@ export class HttpStore implements Store {
     return await this.call<ImportDocumentResult>("/documents", {
       method: "POST", body: JSON.stringify(input),
     })
+  }
+
+  /**
+   * Not wired to the hosted service yet — refuses every write with
+   * `agent_documents_off` until the route exists. Replaced once the hosted
+   * side can accept a generated document; the signature is correct now so
+   * the write-document tool can call it against either store without
+   * knowing which one it has.
+   */
+  async writeGenerated(_input: GeneratedDocumentInput): Promise<ImportDocumentResult> {
+    throw new Error(generatedRefusalMessage("agent_documents_off"))
   }
 
   async adoptImport(claimId: string): Promise<Document> {

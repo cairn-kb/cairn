@@ -672,6 +672,7 @@ function fakeStore(over: Partial<Store>): Store {
     getDocument: async () => unsupported("getDocument"),
     searchDocuments: async () => unsupported("searchDocuments"),
     importDocument: async () => unsupported("importDocument"),
+    writeGenerated: async () => unsupported("writeGenerated"),
     adoptImport: async () => unsupported("adoptImport"),
     ...over,
   }
@@ -1324,8 +1325,8 @@ test("cited documents are resolved to their titles and text", async () => {
 
 test("cites resolves through getDocument, never through get", async () => {
   // `doc-` routing is the whole decision, the same way kbRead routes in
-  // src/mcp.ts. A claim lookup that falls back to a document lookup makes a
-  // stale claim id and a real document id fail identically.
+  // packages/mcp/src/tools.ts. A claim lookup that falls back to a document
+  // lookup makes a stale claim id and a real document id fail identically.
   //
   // A routing bug here does not throw past resolveCites — resolveRefs's own
   // catch turns a wrongly-called Store.get into a *degraded* result, not an

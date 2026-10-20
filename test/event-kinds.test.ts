@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
-import { statesImpossibleHash, RECORDED_HASH } from "@cairn-kb/protocol/event-kinds"
+import { APPROVE_KINDS, RESOLVE_KINDS, statesImpossibleHash, RECORDED_HASH } from "@cairn-kb/protocol/event-kinds"
 import { hashText } from "@cairn-kb/protocol/hash"
+import type { EventKind } from "@cairn-kb/protocol/stats"
 import type { CiteInput } from "@cairn-kb/protocol/types"
 
 /** A citation input carrying exactly the provenance under test. */
@@ -39,4 +40,17 @@ test("no hash and no provenance at all are both legal, and are different facts",
   // `cairn init --team` or every ordinary citation respectively.
   expect(statesImpossibleHash(withHash(null))).toBe(false)
   expect(statesImpossibleHash({ doc: "doc-1", supports: "the detail" })).toBe(false)
+})
+
+test("connect and generate_document are observational — neither an approval nor a resolution", () => {
+  // `connect` (a remote MCP session starting) and `generate_document` (a
+  // machine writing a generated document) are both things that happen with no
+  // human review attached, the same reason `import`, `generate` and `curate`
+  // are silent in both lists: counting either here would credit a human
+  // decision nobody made.
+  const kinds: EventKind[] = ["connect", "generate_document"]
+  for (const kind of kinds) {
+    expect(APPROVE_KINDS.includes(kind)).toBe(false)
+    expect(RESOLVE_KINDS.includes(kind)).toBe(false)
+  }
 })
