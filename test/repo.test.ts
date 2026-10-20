@@ -25,33 +25,54 @@ async function git(args: string[], cwd: string): Promise<void> {
   if ((await proc.exited) !== 0) throw new Error(`git ${args.join(" ")} failed`)
 }
 
-test("repoLabel takes the remote's last path segment without .git", () => {
-  expect(repoLabel("git@github.com:acme/app.git", "/x/y")).toBe("app")
-  expect(repoLabel("https://github.com/acme/app", "/x/y")).toBe("app")
-  expect(repoLabel("https://github.com/acme/app.git/", "/x/y")).toBe("app")
+test("repoLabel takes owner/name from the remote, without .git", () => {
+  expect(repoLabel("git@github.com:acme/app.git", "/x/y")).toBe("acme/app")
+  expect(repoLabel("https://github.com/acme/app", "/x/y")).toBe("acme/app")
+  expect(repoLabel("https://github.com/acme/app.git/", "/x/y")).toBe("acme/app")
+  expect(repoLabel("ssh://git@host:2222/acme/app.git", "/x/y")).toBe("acme/app")
+  expect(repoLabel("https://gitlab.com/group/sub/app.git", "/x/y")).toBe("sub/app")
 })
 
-test("repoLabel falls back to the root's basename, sanitised", () => {
+test("two repositories with the same name under different owners get different labels", () => {
+  const a = repoLabel("git@github.com:acme/api.git", "/x/api")
+  const b = repoLabel("https://github.com/other/api.git", "/y/api")
+  expect(a).toBe("acme/api")
+  expect(b).toBe("other/api")
+})
+
+test("repoLabel keeps just the name when the remote names no owner", () => {
+  expect(repoLabel("https://host/app.git", "/x/y")).toBe("app")
+  expect(repoLabel("app.git", "/x/y")).toBe("app")
+})
+
+test("repoLabel falls back to the root's basename, sanitised, when there is no remote", () => {
   expect(repoLabel(null, "/x/My App")).toBe("My-App")
   expect(repoLabel("", "/x/web.site")).toBe("web.site")
 })
 
-test("repoLabel sanitises a remote's name too", () => {
-  expect(repoLabel("https://host/org/my%20app+v2.git", "/x/y")).toBe("my-20app-v2")
+test("repoLabel sanitises a remote's owner and name too", () => {
+  expect(repoLabel("https://host/my%20org/my%20app+v2.git", "/x/y")).toBe("my-20org/my-20app-v2")
 })
 
 test("repoLabel ignores a query or fragment on the remote", () => {
-  expect(repoLabel("https://host/org/app.git?ref=main", "/x/y")).toBe("app")
-  expect(repoLabel("https://host/org/app#readme", "/x/y")).toBe("app")
-  expect(repoLabel("https://host/org/app.git/?a=1#b", "/x/y")).toBe("app")
+  expect(repoLabel("https://host/org/app.git?ref=main", "/x/y")).toBe("org/app")
+  expect(repoLabel("https://host/org/app#readme", "/x/y")).toBe("org/app")
+  expect(repoLabel("https://host/org/app.git/?a=1#b", "/x/y")).toBe("org/app")
 })
 
 test("repoLabel treats a remote naming '.', '..' or nothing as missing", () => {
   expect(repoLabel("https://host/org/..", "/x/My App")).toBe("My-App")
   expect(repoLabel("https://host/org/.", "/x/My App")).toBe("My-App")
+  expect(repoLabel("https://host/../app", "/x/y")).toBe("app")
   expect(repoLabel("../", "/x/My App")).toBe("My-App")
   expect(repoLabel("?x=1#y", "/x/My App")).toBe("My-App")
   expect(repoLabel(null, "/")).toBe("repo")
+})
+
+test("repoLabel stays within the 100 characters a document's repo may hold", () => {
+  const label = repoLabel(`https://host/${"o".repeat(80)}/${"n".repeat(80)}.git`, "/x/y")
+  expect(label.length).toBeLessThanOrEqual(100)
+  expect(label).toMatch(/^o+\/n+$/)
 })
 
 test("findRepo returns null when git finds nothing", async () => {
@@ -66,7 +87,7 @@ test("findRepo reads the top level and the origin remote", async () => {
     if (args[0] === "remote") return "git@github.com:acme/widgets.git\n"
     return null
   }
-  expect(await findRepo(dir, run)).toEqual({ root: "/work/thing", label: "widgets" })
+  expect(await findRepo(dir, run)).toEqual({ root: "/work/thing", label: "acme/widgets" })
   expect(calls).toContainEqual(["rev-parse", "--show-toplevel"])
   expect(calls).toContainEqual(["remote", "get-url", "origin"])
 })

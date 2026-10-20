@@ -310,12 +310,13 @@ const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
  * ends up on the right of `generated:${repo}/...` — still compared by string
  * equality (`Store.importDocument` matches on `source` as a whole), never
  * split apart or joined onto a filesystem path (see `taggedFields` in
- * src/store.ts). So it is allowed the shape of an actual repository name:
- * letters of either case, digits, ".", "_" and "-", 1 to 100 characters. A
- * repo of ".." passes this pattern — harmless, since nothing ever resolves it
- * against a directory.
+ * src/store.ts). So it is allowed the shape of an actual repository name,
+ * `owner/name` or just `name`: each part letters of either case, digits, ".",
+ * "_" and "-", at most one "/", 1 to 100 characters in all. A part of ".."
+ * passes this pattern — harmless, since nothing ever resolves it against a
+ * directory.
  */
-const REPO_PATTERN = /^[A-Za-z0-9._-]{1,100}$/
+const REPO_PATTERN = /^(?=.{1,100}$)[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)?$/
 
 function assertSlug(value: string): void {
   if (!SLUG_PATTERN.test(value)) {
@@ -330,8 +331,8 @@ function assertSlug(value: string): void {
 function assertRepo(value: string): void {
   if (!REPO_PATTERN.test(value)) {
     throw new Error(
-      `team_knowledge_write_document: repo must be letters, digits, ".", "_" or "-" only, ` +
-        `1 to 100 characters (no "/") — got "${value}".`,
+      `team_knowledge_write_document: repo must be owner/name or name, each part letters, digits, ` +
+        `".", "_" or "-" only, 1 to 100 characters in all — got "${value}".`,
     )
   }
 }

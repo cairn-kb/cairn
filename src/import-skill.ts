@@ -29,7 +29,7 @@ cairn's search tools.
 ## The repo label
 
 The request ends with \`(repo: <label>)\`, for example
-\`${codeScanPrompt("my-app")}\`. Pass that label as \`repo\` on every write,
+\`${codeScanPrompt("acme/my-app")}\`. Pass that label as \`repo\` on every write,
 exactly as given. If no label was given, ask the user for it. Do not make
 one up: the label is what tells this repository's documents apart from
 another's.

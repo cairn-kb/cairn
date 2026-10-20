@@ -44,6 +44,9 @@
 - If you already ran `cairn import` on a repository, running the new
   `cairn init` there imports its docs a second time, under new sources named
   after the repository, so each one appears twice in your space.
+- `cairn init` names a repository `owner/name` from its git remote, so
+  `acme/api` and `other/api` keep separate documents in one space. A
+  repository with no remote is named after its directory.
 
 ### Fixed
 
