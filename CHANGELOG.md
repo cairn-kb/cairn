@@ -26,6 +26,14 @@
   bucket (`<5m`, `5–10m`, `10–30m`, `>30m`, `never`) rather than a raw
   duration; the consent screen shows it.
 
+### Changed
+
+- `cairn init` in a terminal now proves each agent can start cairn, imports
+  the repository's docs (or sets your agent up to map the code), and shows a
+  first answer, signing you in first when you choose a team space; `--yes`,
+  scripts and `--dry-run` work as before, and `--dry-run` now also shows what
+  would be imported.
+
 ### Fixed
 
 - `cairn search` and an agent's search now find documents and claims for a

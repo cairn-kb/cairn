@@ -2,7 +2,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { readdir } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
-import { join } from "node:path"
+import { isAbsolute, join, relative, resolve } from "node:path"
 import type { EventSink, Stats } from "./events"
 import { createMcpServer, DEFAULT_SEARCH_LIMIT } from "./mcp"
 import { ABSENCE_FRAMING } from "@cairn-kb/protocol/absence"
@@ -10,8 +10,13 @@ import { isRateLimit, rootMessage } from "./errors"
 import { generateAbstract, resolveGeneration } from "./generate"
 import type { ResolvedGeneration } from "./generate"
 import { runDoctor, spawnHandshake } from "./doctor"
-import { applyInit, planInit, type Scope } from "./init"
-import { detectAgents, formatAgents } from "./agents"
+import { applyInit, planInit, type InitPlan, type McpServerEntry, type Scope } from "./init"
+import { AGENT_LABEL, detectAgents, formatAgents } from "./agents"
+import { findRepo, repoLabel, scanDocs, topFolders, type RepoInfo } from "./repo"
+import { applyFill, CODE_SCAN_THRESHOLD, planFill, type FillPlan } from "./fill"
+import { codeScanPrompt } from "./import-skill"
+import { firstAnswer, suggestQuestion } from "./first-answer"
+import { proveAgents, RESTART_NOTE, UNOBSERVABLE } from "./prove"
 import { planMigration, runMigration } from "./migrate"
 import { openInBrowser } from "./browser"
 import { runLogin, runLogout } from "./login"
@@ -28,7 +33,7 @@ import { EMPTY_RETRACT_REASON, EMPTY_SUPPORTS } from "@cairn-kb/protocol/event-k
 import type { Claim, Document, Store } from "@cairn-kb/protocol/types"
 import { colorsEnabled, createUi, progressLine } from "./ui"
 import { wordmark } from "./wordmark"
-import { newConfig, readConfig, writeConfig } from "./config"
+import { newConfig, readConfig, updateConfig, writeConfig } from "./config"
 import { listMembers } from "./orgs"
 import { provenanceOf, renderProvenance } from "@cairn-kb/protocol/provenance"
 import type { AuthConfig, Mode } from "./config"
@@ -195,13 +200,17 @@ type Clack = typeof import("@clack/prompts")
  * decision of what a cancel means lives with the caller — and so the cancel
  * path is reachable in a test without a pty.
  */
-async function askScope(cwd: string, interactive: boolean): Promise<Scope | null> {
+async function askScope(cwd: string, interactive: boolean, repo: RepoInfo | null): Promise<Scope | null> {
   if (!interactive) return "project"
   const { isCancel, select } = await import("@clack/prompts")
   const answer = await select({
     message: "Configure this project or your whole machine?",
     options: [
-      { value: "project" as const, label: "This project", hint: cwd },
+      // Named by its repository when there is one: that is what project
+      // scope connects in a terminal, wherever inside it `init` was run.
+      repo
+        ? { value: "project" as const, label: `This project (${repo.label})`, hint: repo.root }
+        : { value: "project" as const, label: "This project", hint: cwd },
       { value: "global" as const, label: "Globally" },
     ],
     initialValue: "project" as const,
@@ -244,6 +253,7 @@ export function initPrompts(
   rest: readonly string[],
   cwd: string,
   interactive: boolean,
+  repo: RepoInfo | null = null,
 ): { resolveScope: () => Promise<Scope | null>; resolveMode: (existing: Mode | null) => Promise<Mode | null> } {
   return {
     resolveScope: async () =>
@@ -251,7 +261,7 @@ export function initPrompts(
         ? "global"
         : rest.includes("--project")
           ? "project"
-          : askScope(cwd, interactive),
+          : askScope(cwd, interactive, repo),
     resolveMode: async (existing) => modeFromFlags(rest) ?? existing ?? (await askMode(interactive)),
   }
 }
@@ -441,6 +451,53 @@ export interface InitCommandDeps {
    */
   openTeamStore?: (auth: AuthConfig) => Store
   out: (line: string) => void
+
+  // Everything below drives the first-run steps an interactive run adds after
+  // the config is written: prove, fill and first answer. Each is optional so a
+  // caller that leaves one out keeps today's behaviour for that step — no
+  // confirmation asked, nothing signed in, no folders added.
+
+  /** The git repository containing `cwd`, or null. In a terminal, project
+   *  scope configures its root and its docs are what fill offers. */
+  repo?: RepoInfo | null
+  /** Asked before the config is written and again before the fill writes
+   *  anything. False or null both mean "don't". */
+  confirmWrite?: (what: string) => Promise<boolean | null>
+  /** Which of the repository's top folders to import from. Null skips the import. */
+  selectFolders?: (folders: { folder: string; count: number }[]) => Promise<string[] | null>
+  /** One more folder to import from; null (or blank) stops asking. */
+  addFolder?: () => Promise<string | null>
+  /** Confirms importing `n` documents into the team space `space`. Render it
+   *  with `teamImportMessage`. */
+  confirmTeamImport?: (n: number, space: string) => Promise<boolean | null>
+  /** The `cairn login` flow, run when team mode is chosen with no session. */
+  signIn?: () => Promise<AuthConfig>
+  /** The mode named on the command line, which is all a dry run looks at. */
+  modeFlag?: Mode | null
+  /** Defaults to doctor's `spawnHandshake`. */
+  handshake?: (e: McpServerEntry) => Promise<string[]>
+  /** Defaults to `makeStore`. */
+  openStore?: (root: string) => Promise<Store>
+  /** Hands the code scan to the user's agent. The CLI asks first and starts
+   *  it once `init` has finished printing. */
+  launchAgent?: (prompt: string, cwd: string) => Promise<void>
+  /** Whether Claude Code's `claude` command is on PATH. */
+  agentOnPath?: () => boolean
+  now?: () => number
+}
+
+/** The team-mode fill confirmation, word for word. */
+export function teamImportMessage(n: number, space: string): string {
+  return `these ${n} documents will be visible to everyone in ${space}`
+}
+
+/** "A", "A and B", "A, B and C". */
+function listJoin(items: string[]): string {
+  return items.length <= 1 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`
 }
 
 /**
@@ -459,8 +516,13 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
   const scope = await d.resolveScope()
   if (scope === null) return "cancelled"
 
+  const repo = d.repo ?? null
+  // In a terminal, project scope means the repository, wherever inside it
+  // `init` was run — `.mcp.json` in `src/` is a config no agent opens.
+  // Scripts keep targeting the current directory, as they always have.
+  const projectDir = d.interactive && scope === "project" && repo ? repo.root : d.cwd
   const plan = await planInit({
-    home: d.home, cwd: d.cwd, cliPath: d.cliPath, scope,
+    home: d.home, cwd: projectDir, cliPath: d.cliPath, scope,
     dryRun: d.dryRun, bunPath: d.bunPath, execPath: d.execPath, cairnRoot: d.root,
     writeWithoutAgent: d.writeWithoutAgent,
   })
@@ -488,20 +550,31 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
   }
 
   // "Will write: …" — named before consent is asked.
+  // Names for a person; a script reading stdout keeps the ids it always got.
+  const configuring = d.interactive ? listJoin(plan.agents.map((a) => AGENT_LABEL[a])) : plan.agents.join(" and ")
   d.out(
     `${ui.bold(d.dryRun ? "Would configure" : "Will configure")} ` +
-      `${ui.cyan(plan.agents.join(" and "))} — ${plan.scope}\n`,
+      `${ui.cyan(configuring)} — ${plan.scope}\n`,
   )
   for (const c of plan.changes) d.out(`  ${ui.skip(ui.dim(c.path))}`)
 
-  for (const note of plan.printOnly) {
-    d.out(`\n${ui.warn(note)}\n`)
-    d.out(plan.instructions.replace(/^/gm, "    "))
-  }
-
-  if (d.dryRun) return "planned"
+  // Every note, then the block they all point at — once, not once per note.
+  plan.printOnly.forEach((note, i) => {
+    d.out(`\n${ui.warn(note)}${i === plan.printOnly.length - 1 ? "\n" : ""}`)
+  })
+  if (plan.printOnly.length > 0) d.out(plan.instructions.replace(/^/gm, "    "))
 
   const existing = await readConfig(d.root)
+
+  if (d.dryRun) {
+    // Never prompts: the mode is whatever was named or already chosen.
+    await printFillDryRun(d, repo, plan, d.modeFlag ?? existing?.mode ?? null)
+    return "planned"
+  }
+
+  if (d.interactive && d.confirmWrite) {
+    if ((await d.confirmWrite("Write these files?")) !== true) return "cancelled"
+  }
 
   const mode = await d.resolveMode(existing?.mode ?? null)
   if (mode === null) return "cancelled"
@@ -519,6 +592,20 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
           "empty directory to start a local space instead.",
       )
     }
+  }
+
+  // Signed in before anything is written, not after: `cairn mcp` opens its
+  // store at startup and a team store needs a session, so an agent configured
+  // on a root nobody has signed into fails its handshake below.
+  let auth = existing?.auth ?? null
+  if (d.interactive && mode === "team" && !auth && d.signIn) {
+    try {
+      auth = await d.signIn()
+    } catch (err) {
+      d.out(ui.warn(`could not sign in: ${rootMessage(err)}`))
+      return "cancelled"
+    }
+    d.out(ui.ok(`signed in as ${auth.user ?? "you"} — space ${ui.bold(auth.orgSlug)}`))
   }
 
   // Local -> team is the opposite move: nothing refuses it, but a root that
@@ -546,7 +633,7 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
     }
     if (holdsSomething(held)) {
       const what = describeHoldings(held)
-      if (!existing.auth) {
+      if (!auth) {
         throw new Error(
           `this CAIRN_ROOT holds ${what} waiting to move, but no team account is connected — ` +
             "run `cairn login` first, then `cairn init --team` again.",
@@ -594,10 +681,8 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
       const from = new FileStore(d.root, new EventLog(d.root))
       await from.init()
       const to = d.openTeamStore
-        ? d.openTeamStore(existing.auth)
-        : new HttpStore({
-            baseUrl: existing.auth.apiUrl, token: existing.auth.token, orgId: existing.auth.orgId,
-          })
+        ? d.openTeamStore(auth)
+        : new HttpStore({ baseUrl: auth.apiUrl, token: auth.token, orgId: auth.orgId })
       const r = await runMigration(from, to, d.out)
       // Only the non-zero parts, for the same reason the prompt above drops
       // them: after `cairn import` this run moves 0 approved claims, 0 pending
@@ -641,8 +726,189 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
   // must not look like a new user, and switching mode must not sign anyone
   // out. The stale-credential risk that leaves is answered by making it
   // visible in `doctor`, not by deleting it behind the operator's back.
-  await writeConfig(d.root, existing ? { ...existing, telemetry, mode } : { ...newConfig(telemetry), mode })
+  await writeConfig(
+    d.root,
+    existing ? { ...existing, telemetry, mode, auth } : { ...newConfig(telemetry), mode, auth },
+  )
+  if (!d.interactive) return "written"
+
+  await printProofs(d, plan)
+  await firstFill(d, repo, plan, mode, auth)
+
+  // The baseline the first-answer metric measures from — with consent only,
+  // and set once: a re-run of init is not a new first run. Patched rather
+  // than written whole, so a concurrent ping's own fields survive.
+  const now = d.now ?? Date.now
+  await updateConfig(d.root, (latest) =>
+    latest.telemetry && latest.initCompletedAt === null
+      ? { initCompletedAt: new Date(now()).toISOString() }
+      : null,
+  )
   return "written"
+}
+
+/** The fill step's half of a dry run: what would be imported, and whether
+ *  the code scan would be offered. Reads the disk, writes and asks nothing. */
+async function printFillDryRun(
+  d: InitCommandDeps,
+  repo: RepoInfo | null,
+  plan: InitPlan,
+  mode: Mode | null,
+): Promise<void> {
+  if (!repo) {
+    d.out(`\n${ui.bold("Would import")} nothing yet — no git repository here, so init would ask for folders.`)
+    return
+  }
+  const fill = await planFill(repo, await scanDocs(repo.root), plan.agents, plan.scope, d.home, mode)
+  printFillPreview(d, fill, "Would")
+  if (fill.codeScan === null) {
+    d.out(ui.dim("  Too few documents for a first import; whether to offer a code scan: mode not chosen yet."))
+  } else if (fill.codeScan) {
+    d.out(ui.dim(`  Too few documents — init would offer a code scan: ${codeScanPrompt(repo.label)}`))
+  }
+}
+
+/** The import set and every skill file it writes, before either happens. */
+function printFillPreview(d: InitCommandDeps, fill: FillPlan, verb: "Will" | "Would"): void {
+  const n = fill.files.length
+  d.out(`\n${ui.bold(`${verb} import`)} ${plural(n, "document")} from ${ui.cyan(fill.repo.label)} — ${fill.repo.root}`)
+  for (const { folder, count } of topFolders(fill.repo.root, fill.files).slice(0, 5)) {
+    d.out(`  ${ui.skip(`${folder === "." ? "(top level)" : `${folder}/`} ${ui.dim(String(count))}`)}`)
+  }
+  if (fill.skills.length > 0) {
+    d.out(`${ui.bold(`${verb} write`)} the cairn-import skill, so your agent can map the code:`)
+    for (const skill of fill.skills) d.out(`  ${ui.skip(ui.dim(skill.path))}`)
+  }
+}
+
+/** Read each agent's cairn entry back from disk and start it, the way the
+ *  agent will. A failure is reported with its fix and the run carries on. */
+async function printProofs(d: InitCommandDeps, plan: InitPlan): Promise<void> {
+  const proofs = await proveAgents(plan.configs, d.handshake ?? spawnHandshake)
+  d.out("")
+  for (const p of proofs) {
+    const line = `${AGENT_LABEL[p.agent]} — ${p.detail}`
+    d.out(p.ok ? ui.ok(line) : `${ui.red("✗")} ${line}`)
+    if (p.fix) d.out(`  ${ui.dim("fix:")} ${p.fix}`)
+  }
+  for (const agent of plan.agents) {
+    // Cursor's approval is only asked for a project server.
+    if (agent === "cursor" && plan.scope !== "project") continue
+    const unseen = UNOBSERVABLE[agent]
+    if (unseen) d.out(`  ${ui.dim("→")} ${AGENT_LABEL[agent]}: ${unseen}`)
+  }
+  d.out(ui.dim(RESTART_NOTE))
+}
+
+function isInside(root: string, dir: string): boolean {
+  const rel = relative(root, dir)
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+}
+
+const CONSOLE_IMPORT = "To bring in more, use the console's Import."
+
+/**
+ * Fill the space and show it answering: the repository's docs (or, with too
+ * few, the code-scan skill), each write previewed and confirmed first, then
+ * one real search over what arrived.
+ */
+async function firstFill(
+  d: InitCommandDeps,
+  repo: RepoInfo | null,
+  plan: InitPlan,
+  mode: Mode,
+  auth: AuthConfig | null,
+): Promise<void> {
+  let target = repo
+  let files = target ? await scanDocs(target.root) : []
+
+  if (target && files.length > 0 && d.selectFolders) {
+    const root = target.root
+    const picked = await d.selectFolders(topFolders(root, files))
+    if (picked === null) {
+      d.out(ui.warn("Nothing was imported."))
+      return
+    }
+    files = files.filter((f) => picked.includes(topFolders(root, [f])[0]!.folder))
+  }
+
+  while (d.addFolder) {
+    const answer = (await d.addFolder())?.trim()
+    if (!answer) break
+    const dir = resolve(d.cwd, answer.replace(/^~(?=$|\/)/, d.home))
+    if (!target) {
+      target = { root: dir, label: repoLabel(null, dir) }
+    } else if (!isInside(target.root, dir)) {
+      d.out(ui.warn(`${dir} is outside ${target.root} — import it on its own with \`cairn import ${dir}\`.`))
+      continue
+    }
+    const found = await scanDocs(dir).catch(() => null)
+    if (found === null) {
+      d.out(ui.warn(`could not read ${dir}`))
+      continue
+    }
+    files = [...new Set([...files, ...found])].sort()
+  }
+
+  if (!target) {
+    d.out(`\n${ui.dim("No documents to import.")}${mode === "team" ? ` ${CONSOLE_IMPORT}` : ""}`)
+    return
+  }
+
+  const fill = await planFill(target, files, plan.agents, plan.scope, d.home, mode)
+  if (fill.files.length === 0 && fill.skills.length === 0) {
+    d.out(`\n${ui.dim(`No documents to import in ${target.root}.`)}${mode === "team" ? ` ${CONSOLE_IMPORT}` : ""}`)
+    return
+  }
+
+  printFillPreview(d, fill, "Will")
+  const ask = fill.files.length > 0 ? "Import these documents?" : "Write the skill files?"
+  if (d.confirmWrite && (await d.confirmWrite(ask)) !== true) {
+    d.out(ui.warn("Nothing was imported."))
+    return
+  }
+  if (mode === "team" && fill.files.length > 0 && d.confirmTeamImport) {
+    if ((await d.confirmTeamImport(fill.files.length, auth?.orgSlug ?? "the team space")) !== true) {
+      d.out(ui.warn("Nothing was imported."))
+      return
+    }
+  }
+
+  const store = await (d.openStore ?? makeStore)(d.root)
+  const result = await applyFill(store, fill)
+  if (fill.files.length > 0) {
+    d.out(ui.ok(`imported ${plural(result.titles.length, "document")} from ${fill.repo.label}`))
+  }
+  for (const skill of fill.skills) d.out(ui.ok(`wrote ${skill.path}`))
+  if (mode === "team" && fill.files.length < CODE_SCAN_THRESHOLD) {
+    d.out(ui.dim(`Little documentation here to import. ${CONSOLE_IMPORT}`))
+  }
+
+  if (result.titles.length > 0) {
+    const { query, question } = suggestQuestion(result.titles, fill.repo.label)
+    const found = await firstAnswer(store, query)
+    d.out(`\n${ui.bold("First answer")} ${ui.dim(`— searching "${query}"`)}`)
+    if (found.hits.length === 0) {
+      // Said plainly: a demonstration that hides an empty result is the false
+      // success this step exists to rule out.
+      d.out(ui.warn(`The search found nothing for "${query}" — your agent would see the same.`))
+    } else {
+      for (const hit of found.hits) {
+        const text = hit.kind === "claim" ? hit.claim : hit.title
+        const generated = hit.kind === "document" && hit.generated ? ` ${ui.dim("(generated)")}` : ""
+        d.out(`  ${ui.skip(`${text}${generated}`)}`)
+      }
+      d.out(`Ask your agent: ${ui.cyan(question)}`)
+    }
+  }
+
+  if (fill.codeScan === true && fill.skills.length > 0) {
+    const prompt = codeScanPrompt(fill.repo.label)
+    d.out(`\nTo have your agent map the code, tell it: ${ui.cyan(prompt)}`)
+    if (plan.agents.includes("claude") && d.launchAgent && d.agentOnPath?.()) {
+      await d.launchAgent(prompt, fill.repo.root)
+    }
+  }
 }
 
 async function markdownFiles(dir: string): Promise<string[]> {
@@ -2065,6 +2331,14 @@ export async function main(argv: string[]): Promise<void> {
 
       const clack = interactive ? await import("@clack/prompts") : null
       clack?.intro("cairn")
+      // Only a person, or a dry run showing one what would happen, gets the
+      // repository: a script keeps configuring exactly where it is run.
+      const repo = interactive || dryRun ? await findRepo(cwd) : null
+      // Asked for during the run, started only once init has finished
+      // printing — Claude Code takes over the terminal.
+      let launch: { prompt: string; cwd: string } | null = null
+      const answered = <T,>(answer: T): Exclude<T, symbol> | null =>
+        clack!.isCancel(answer) ? null : (answer as Exclude<T, symbol>)
 
       const outcome = await runInitCommand({
         root: ROOT,
@@ -2081,8 +2355,44 @@ export async function main(argv: string[]): Promise<void> {
         // and defaulting into "write config for an agent I could not find"
         // is a decision the operator should make out loud.
         writeWithoutAgent: rest.includes("--project"),
-        ...initPrompts(rest, cwd, interactive),
+        ...initPrompts(rest, cwd, interactive, repo),
         interactive,
+        repo,
+        modeFlag: modeFromFlags(rest),
+        confirmWrite: async (message) => answered(await clack!.confirm({ message, initialValue: true })),
+        selectFolders: async (folders) =>
+          answered(
+            await clack!.multiselect({
+              message: "Import the docs in these folders?",
+              options: folders.map(({ folder, count }) => ({
+                value: folder,
+                label: folder === "." ? "(top level)" : `${folder}/`,
+                hint: `${count} doc${count === 1 ? "" : "s"}`,
+              })),
+              initialValues: folders.map((f) => f.folder),
+              required: false,
+            }),
+          ),
+        addFolder: async () =>
+          answered(
+            await clack!.text({
+              message: "Add another folder of docs? (leave blank to continue)",
+              placeholder: "path/to/docs",
+              defaultValue: "",
+            }),
+          ) || null,
+        confirmTeamImport: async (n, space) => {
+          clack!.log.warn(teamImportMessage(n, space))
+          return answered(await clack!.confirm({ message: "Import them?", initialValue: false }))
+        },
+        signIn: () => signIn(process.env.CAIRN_API_URL ?? DEFAULT_API_URL, {}),
+        handshake: (entry) => spawnHandshake(entry),
+        openStore: makeStore,
+        agentOnPath: () => Bun.which("claude") !== null,
+        launchAgent: async (prompt, dir) => {
+          const yes = answered(await clack!.confirm({ message: "Start Claude Code now?", initialValue: true }))
+          if (yes === true) launch = { prompt, cwd: dir }
+        },
         resolveMigration: async (held) => askMigration(clack, held),
         resolveTelemetry: async (existing) => {
           const flagged = telemetryChoice(rest)
@@ -2121,6 +2431,16 @@ export async function main(argv: string[]): Promise<void> {
         if (mark) {
           console.log("")
           for (const line of mark) console.log(ui.dim(line))
+        }
+        // Read through a const: TypeScript cannot see the callback above
+        // assign it, and narrows the `let` to null.
+        const handoff = launch as { prompt: string; cwd: string } | null
+        if (handoff) {
+          const proc = Bun.spawn(["claude", handoff.prompt], {
+            cwd: handoff.cwd,
+            stdio: ["inherit", "inherit", "inherit"],
+          })
+          process.exitCode = await proc.exited
         }
       }
       break
