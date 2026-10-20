@@ -424,17 +424,29 @@ export async function checkInstructions(
   // Missing files are not an error here; absence across all of them is.
   const withBlock: string[] = []
   for (const path of candidates) if (await hasBlock(path)) withBlock.push(path)
-  if (withBlock.length === 1 && withBlock[0] === agentsMd && (await claudeCodeConfigured(deps, configPath))) {
-    // Reaching here means the project's CLAUDE.md neither imports AGENTS.md
-    // nor is the same file — both cases returned above.
-    const hiding = await hidingClaudeMd(deps)
-    if (hiding !== null) {
-      return {
-        name: "instructions", group: "Agent config", status: "fail",
-        detail: `${agentsMd} has the cairn instructions block, but Claude Code skips it because ${hiding} exists`,
-        fix:
-          "Claude Code won't read AGENTS.md while a CLAUDE.md exists here or above — " +
-          "re-run cairn init to add an @AGENTS.md import to this project's CLAUDE.md",
+  if (withBlock.length > 0 && (await claudeCodeConfigured(deps, configPath))) {
+    // Claude Code reads the project's CLAUDE.md, ~/.claude/CLAUDE.md, and
+    // AGENTS.md only while no CLAUDE.md exists here or above. The import and
+    // same-file cases returned above; Cursor's rules it never reads at all.
+    const userMd = join(deps.home, ".claude", "CLAUDE.md")
+    const read = withBlock.find((p) => p === claudeMd || p === userMd)
+    if (read === undefined) {
+      const hiding = withBlock.includes(agentsMd) ? await hidingClaudeMd(deps) : null
+      if (hiding !== null) {
+        return {
+          name: "instructions", group: "Agent config", status: "fail",
+          detail: `${agentsMd} has the cairn instructions block, but Claude Code skips it because ${hiding} exists`,
+          fix:
+            "Claude Code won't read AGENTS.md while a CLAUDE.md exists here or above — " +
+            "re-run cairn init to add an @AGENTS.md import to this project's CLAUDE.md",
+        }
+      }
+      if (!withBlock.includes(agentsMd)) {
+        return {
+          name: "instructions", group: "Agent config", status: "fail",
+          detail: `the cairn instructions block is only in ${withBlock.join(", ")}, which Claude Code does not read`,
+          fix: "cairn init",
+        }
       }
     }
   }

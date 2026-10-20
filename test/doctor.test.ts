@@ -395,6 +395,56 @@ test("without Claude Code, a CLAUDE.md beside AGENTS.md does not matter", async 
   expect(r.status).toBe("ok")
 })
 
+// Cursor's rules file carries the block too, but Claude Code never reads it.
+async function claudeAndCursorProject(claudeMd: string) {
+  await mkdir(join(cwd, ".cursor", "rules"), { recursive: true })
+  await writeFile(join(cwd, "AGENTS.md"), BLOCK, "utf-8")
+  await writeFile(join(cwd, ".cursor", "rules", "cairn.mdc"), BLOCK, "utf-8")
+  await writeFile(join(cwd, "CLAUDE.md"), claudeMd, "utf-8")
+  await writeMcp(cairnEntry())
+  await writeFile(join(cwd, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { cairn: cairnEntry() } }), "utf-8")
+}
+
+test("Claude Code + Cursor with the block in AGENTS.md and cairn.mdc, and a CLAUDE.md beside them, fails", async () => {
+  await claudeAndCursorProject("# notes\n")
+  const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
+  expect(r.status).toBe("fail")
+  expect(r.fix).toContain("Claude Code won't read AGENTS.md")
+})
+
+test("Claude Code + Cursor with a CLAUDE.md that imports AGENTS.md passes", async () => {
+  await claudeAndCursorProject("# notes\n@AGENTS.md\n")
+  const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
+  expect(r.status).toBe("ok")
+})
+
+test("Claude Code with the block only in Cursor's rules fails", async () => {
+  await mkdir(join(cwd, ".cursor", "rules"), { recursive: true })
+  await writeFile(join(cwd, ".cursor", "rules", "cairn.mdc"), BLOCK, "utf-8")
+  await writeMcp(cairnEntry())
+  const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
+  expect(r.status).toBe("fail")
+  expect(r.detail).toContain("Claude Code")
+  expect(r.fix).toContain("cairn init")
+})
+
+test("Claude Code with the block in ~/.claude/CLAUDE.md passes whatever the project has", async () => {
+  await mkdir(join(home, ".claude"), { recursive: true })
+  await writeFile(join(home, ".claude", "CLAUDE.md"), BLOCK, "utf-8")
+  await writeFile(join(cwd, "AGENTS.md"), BLOCK, "utf-8")
+  await writeFile(join(cwd, "CLAUDE.md"), "# notes\n", "utf-8")
+  await writeMcp(cairnEntry())
+  const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
+  expect(r.status).toBe("ok")
+})
+
+test("Claude Code with the block in the project's CLAUDE.md passes", async () => {
+  await writeFile(join(cwd, "CLAUDE.md"), BLOCK, "utf-8")
+  await writeMcp(cairnEntry())
+  const r = await checkInstructions(deps(), join(cwd, ".mcp.json"))
+  expect(r.status).toBe("ok")
+})
+
 test("telemetry with no config reports not configured", async () => {
   await mkdir(join(home, ".claude"), { recursive: true })
   const r = await checkTelemetry(deps())
