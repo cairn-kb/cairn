@@ -5,7 +5,7 @@
 ### Changed
 
 - The event cairn logs for each agent search now records how many results it
-  returned, and every event an agent's tool call logs records that it came
+  returned, and the map, read and search events record that they came
   through `cairn mcp`.
 
 ## [0.9.1] — 2026-10-20

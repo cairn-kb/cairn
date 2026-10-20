@@ -29,7 +29,7 @@ export const ALL_SCOPES: ReadonlySet<Scope> = new Set<Scope>(["knowledge:read", 
 export interface ServerOptions {
   /** Reported to the host in the handshake — the build's, never a literal. */
   version: string
-  /** Which transport this server is served over; every event records it. */
+  /** Which transport this server is served over; map, read and search events record it. */
   via: Via
   /** Defaults to `ALL_SCOPES`. */
   scopes?: ReadonlySet<Scope>

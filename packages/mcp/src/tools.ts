@@ -106,7 +106,7 @@ export const SERVER_INSTRUCTIONS =
  * the person who asked it to run gave it, not a guess: using the wrong one
  * mislabels the document for everyone who reads it afterwards.
  */
-export const WRITE_DOCUMENT_DESCRIPTION = `Write an overview document into the local space, labelled generated so people \
+export const WRITE_DOCUMENT_DESCRIPTION = `Write an overview document into this space, labelled generated so people \
 can tell a machine wrote it. The text is shown to people exactly as you write it — there is no draft stage.
 
 \`repo\` is the repository label you were given for this work, not one you invent. \`slug\` names the document within \
@@ -117,8 +117,9 @@ changes.`
 
 /**
  * Which transport a tool call arrived over: `cairn mcp`'s stdio, or the hosted
- * service's connector. Every event the tools append carries it as `meta.via`,
- * so a count can be split by where agents actually reach the space from.
+ * service's connector. The map, read and search events the tools append carry
+ * it as `meta.via`, so a count can be split by where agents actually reach the
+ * space from. Propose and cite events are the store's to write, and do not.
  */
 export type Via = "stdio" | "connector"
 

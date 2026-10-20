@@ -12,8 +12,8 @@ hosted service does as well as in the CLI.
 - `createMcpServer(store, log, opts)` builds an `McpServer` from any `ToolStore`
   (the subset of `@cairn-kb/protocol`'s `Store` the tools call) and `ToolSink`
   (somewhere to append events). `opts.version` is reported in the handshake;
-  `opts.via` (`"stdio"` or `"connector"`) is recorded on every event as
-  `meta.via`; `opts.scopes` limits which tools are registered —
+  `opts.via` (`"stdio"` or `"connector"`) is recorded as `meta.via` on the
+  map, read and search events the tools append; `opts.scopes` limits which tools are registered —
   `knowledge:read` for map, read and search, `knowledge:write` for propose,
   cite and write_document; `ALL_SCOPES` is the default.
 - `createTools(store, log, via)` is the same tools without a server, for an
