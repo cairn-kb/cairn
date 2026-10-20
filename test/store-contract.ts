@@ -1287,6 +1287,24 @@ export const PASSAGE_CONTRACT_CASES: ContractCase[] = [
     },
   },
   {
+    name: "one long document does not crowd out the others",
+    async run(store, expect) {
+      // Sixty sections dense with the word outrank every other document's
+      // single mention. Capping each document only after a fixed depth of
+      // rows lets this one fill the whole depth and leave the rest unseen.
+      const text = Array.from({ length: 60 }, (_, i) =>
+        `## Part ${i}\n\n` + "zebra zebra zebra stripes. ".repeat(10) + `More words for part ${i}.`).join("\n\n")
+      const big = await store.importDocument({ title: "Zebra manual", text, source: "big.md" })
+      for (let i = 0; i < 6; i++) {
+        await store.importDocument({ title: `Note ${i}`, text: `A note that mentions a zebra once, item ${i}.`, source: `n${i}.md` })
+      }
+      const { hits } = await store.searchPassages("zebra")
+      expect(hits.length).toBe(6)
+      expect(hits.filter((h) => h.doc === big.document.id).length).toBe(2)
+      expect(new Set(hits.filter((h) => h.doc !== big.document.id).map((h) => h.doc)).size).toBe(4)
+    },
+  },
+  {
     name: "limit bounds the hits",
     async run(store, expect) {
       await store.importDocument({ title: "A", text: body("quokka habitats"), source: "a.md" })

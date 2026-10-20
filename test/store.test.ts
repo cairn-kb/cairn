@@ -508,3 +508,87 @@ test("an index deleted by hand reopens, though its write-ahead log was left behi
   await reopened.init()
   expect((await reopened.searchPassages("narwhal")).hits.map((h) => h.doc)).toEqual([document.id])
 })
+
+test("searchDocuments finds every matching document, however many sections one of them has", async () => {
+  const sec = (i: number) =>
+    `## S${i}\n\n` + "zebra zebra zebra stripes. ".repeat(20) + "filler text to make it long enough. ".repeat(10)
+  const big = await store.importDocument({
+    title: "Big", text: Array.from({ length: 80 }, (_, i) => sec(i)).join("\n\n"), source: "big.md",
+  })
+  for (let i = 0; i < 30; i++) {
+    await store.importDocument({
+      title: `Small ${i}`,
+      text: `A note that mentions a zebra once, among many other unrelated words about item ${i}.`,
+      source: `s${i}.md`,
+    })
+  }
+  const docs = await store.searchDocuments("zebra")
+  expect(docs.length).toBe(31)
+  expect(docs[0]!.id).toBe(big.document.id)
+  expect((await store.searchPassages("zebra")).hits.length).toBe(6)
+})
+
+/** Run `during` after the store has read the files for a rebuild, before it writes the index. */
+function betweenSnapshotAndWrite(target: FileStore, during: () => Promise<void>): void {
+  const seam = target as unknown as { snapshot(): Promise<unknown> }
+  const original = seam.snapshot.bind(target)
+  seam.snapshot = async () => {
+    const snap = await original()
+    await during()
+    return snap
+  }
+}
+
+test("a document imported while the index rebuilds stays in the index", async () => {
+  await store.importDocument({ title: "Old", text: "the heron note", source: "old.md" })
+  const other = new FileStore(root, new EventLog(root))
+  await other.init()
+  betweenSnapshotAndWrite(store, async () => {
+    await other.importDocument({ title: "New", text: "the egret note", source: "new.md" })
+  })
+  expect(await store.rebuildIndex()).toEqual({ claims: 0, documents: 1 })
+  expect((await store.searchPassages("egret")).hits.length).toBe(1)
+  expect((await store.searchPassages("heron")).hits.length).toBe(1)
+})
+
+test("a document changed while the index rebuilds keeps its new passages", async () => {
+  await store.importDocument({ title: "Doc", text: "the bittern note", source: "doc.md" })
+  const other = new FileStore(root, new EventLog(root))
+  await other.init()
+  betweenSnapshotAndWrite(store, async () => {
+    await other.importDocument({ title: "Doc", text: "the plover note", source: "doc.md" })
+  })
+  await store.rebuildIndex()
+  expect((await store.searchPassages("plover")).hits.length).toBe(1)
+  expect((await store.searchPassages("bittern")).hits).toEqual([])
+})
+
+test("a rebuild drops the passages of a document whose file is gone", async () => {
+  const { document } = await store.importDocument({ title: "Gone", text: "the curlew note", source: "gone.md" })
+  await rm(join(root, "documents", `${document.id}.md`))
+  await store.rebuildIndex()
+  expect((await store.searchPassages("curlew")).hits).toEqual([])
+})
+
+test("an upgrade another process finished first is not written over", async () => {
+  const old = await mkdtemp(join(tmpdir(), "cairn-race-index-"))
+  try {
+    await mkdir(join(old, "documents"), { recursive: true })
+    const before = new Database(join(old, "index.db"))
+    before.run("CREATE VIRTUAL TABLE documents USING fts5(id UNINDEXED, title, text, source UNINDEXED)")
+    before.close()
+    const slow = new FileStore(old, new EventLog(old))
+    const fast = new FileStore(old, new EventLog(old))
+    // `fast` upgrades the index and imports while `slow` sits between reading
+    // the files and writing: `slow`'s snapshot predates the import, and
+    // writing it now would leave the index without that document.
+    betweenSnapshotAndWrite(slow, async () => {
+      await fast.init()
+      await fast.importDocument({ title: "Late", text: "the avocet note", source: "late.md" })
+    })
+    await slow.init()
+    expect((await slow.searchPassages("avocet")).hits.length).toBe(1)
+  } finally {
+    await rm(old, { recursive: true, force: true })
+  }
+})

@@ -4,11 +4,12 @@
 
 ### Changed
 
-- Search now finds the passage of a document that matches your question, not
-  just the document. Documents are indexed section by section, so a long
-  document is found by the part of it that answers. The local index rebuilds
-  itself once, the first time cairn opens it after upgrading; nothing needs
-  re-importing.
+- Documents are now indexed section by section, and document search ranks
+  each document by its best-matching section, so a long document is found
+  by the part of it that answers. The local index rebuilds itself once, the
+  first time cairn opens it after upgrading; nothing needs re-importing.
+- The local index now uses SQLite's write-ahead log, so `cairn import` can
+  write while cairn's MCP server has the index open.
 
 ## [0.9.1] — 2026-10-20
 
