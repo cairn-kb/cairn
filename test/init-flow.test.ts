@@ -349,6 +349,41 @@ test("a handshake that throws marks the agent ✗ with its fix, and the flow con
   expect(said()).toContain("spawn failed")
   expect(said()).toContain("run the configured command yourself")
   expect(await docCount()).toBe(4)
+  // No agent can start cairn, so nothing may end the run as if one could.
+  expect(said()).not.toContain("Ask your agent:")
+  expect(said()).not.toContain("Restart your agent")
+  expect(said()).toContain(NONE_PROVEN)
+  expect((await readConfig(root))?.initCompletedAt).toBe("2026-10-20T10:00:00.000Z")
+})
+
+const NONE_PROVEN = "None of your agents could start cairn — fix the ✗ above, then run cairn doctor"
+
+test("one of two agents proving is enough for the normal ending", async () => {
+  await writeDocs(repoRoot, FOUR)
+  await mkdir(join(home, ".cursor"), { recursive: true })
+  let calls = 0
+  const outcome = await runInitCommand(
+    await deps({
+      handshake: async () => {
+        if (calls++ === 0) throw new Error("spawn failed")
+        return [...EXPECTED_TOOLS]
+      },
+    }),
+  )
+  expect(outcome).toBe("written")
+  expect(calls).toBe(2)
+  expect(said()).toContain("✗")
+  expect(said()).toContain("Ask your agent:")
+  expect(said()).toContain("Restart your agent, then run `cairn doctor`")
+  expect(said()).not.toContain(NONE_PROVEN)
+})
+
+test("a proven run ends by telling you to restart and run doctor", async () => {
+  await writeDocs(repoRoot, FOUR)
+  await runInitCommand(await deps())
+  expect(said()).toContain("Ask your agent:")
+  expect(said()).toContain("Restart your agent, then run `cairn doctor`")
+  expect(said()).not.toContain(NONE_PROVEN)
 })
 
 // --- project root -------------------------------------------------------------

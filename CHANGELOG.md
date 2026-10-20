@@ -20,7 +20,8 @@
   `team_knowledge_write_document` MCP tool; they are labelled generated in
   search, reads and `cairn show`.
 - `cairn init` checks that each agent it configured can actually start
-  cairn, and names the fix when one cannot.
+  cairn, and names the fix when one cannot; when none can, it ends by
+  saying so instead of with the usual next steps.
 - With telemetry on, cairn reports once how long it took from finishing
   `cairn init` to your agent's first search that found something, as a
   bucket (`<5m`, `5–10m`, `10–30m`, `>30m`, `never`) rather than a raw

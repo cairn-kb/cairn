@@ -484,7 +484,15 @@ export interface InitCommandDeps {
   /** Whether Claude Code's `claude` command is on PATH. */
   agentOnPath?: () => boolean
   now?: () => number
+  /** The closing line of an interactive run. Defaults to `out`. */
+  outro?: (line: string) => void
 }
+
+/** How an interactive run ends when at least one agent proved it can start cairn. */
+export const INIT_OUTRO = "Restart your agent, then run `cairn doctor`"
+/** How it ends when none could: a success line there would be false. */
+export const INIT_OUTRO_UNPROVEN =
+  "None of your agents could start cairn — fix the ✗ above, then run cairn doctor"
 
 /** The team-mode fill confirmation, word for word. */
 export function teamImportMessage(n: number, space: string): string {
@@ -736,7 +744,8 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
   // Launching Claude Code is only worth offering once it has shown it can
   // start cairn; with a failed proof the prompt is still printed, for later.
   const claudeProven = proofs.some((p) => p.agent === "claude" && p.ok)
-  await firstFill(d, repo, plan, mode, auth, claudeProven)
+  const anyProven = proofs.some((p) => p.ok)
+  await firstFill(d, repo, plan, mode, auth, claudeProven, anyProven)
 
   // The baseline the first-answer metric measures from — with consent only,
   // and set once: a re-run of init is not a new first run. Patched rather
@@ -747,6 +756,10 @@ export async function runInitCommand(d: InitCommandDeps): Promise<InitOutcome> {
       ? { initCompletedAt: new Date(now()).toISOString() }
       : null,
   )
+  // Still "written", and still exit 0: the files are on disk and correct as
+  // far as cairn can tell. But a run whose every agent failed to start cairn
+  // must not close the way a working one does.
+  ;(d.outro ?? d.out)(anyProven ? INIT_OUTRO : INIT_OUTRO_UNPROVEN)
   return "written"
 }
 
@@ -833,6 +846,7 @@ async function firstFill(
   mode: Mode,
   auth: AuthConfig | null,
   claudeProven: boolean,
+  anyProven: boolean,
 ): Promise<void> {
   let target = repo
   let files = target ? await scanDocs(target.root) : []
@@ -913,7 +927,9 @@ async function firstFill(
         const generated = hit.kind === "document" && hit.generated ? ` ${ui.dim("(generated)")}` : ""
         d.out(`  ${ui.skip(`${text}${generated}`)}`)
       }
-      d.out(`Ask your agent: ${ui.cyan(question)}`)
+      // Only once some agent has shown it can start cairn — otherwise the
+      // question has nobody to answer it.
+      if (anyProven) d.out(`Ask your agent: ${ui.cyan(question)}`)
     }
   }
 
@@ -2419,6 +2435,7 @@ export async function main(argv: string[]): Promise<void> {
           return askTelemetry(clack!)
         },
         out: (line) => console.log(line),
+        outro: (line) => clack!.outro(line),
       })
 
       if (outcome === "cancelled") {
@@ -2435,8 +2452,8 @@ export async function main(argv: string[]): Promise<void> {
         process.exit(1)
       }
       if (outcome === "written") {
-        if (interactive) clack!.outro("Restart your agent, then run `cairn doctor`")
-        else console.log(`\n${ui.dim("Restart your agent, then")} cairn doctor`)
+        // An interactive run has already closed itself through `outro`.
+        if (!interactive) console.log(`\n${ui.dim("Restart your agent, then")} cairn doctor`)
         // After the closing line rather than before it, so the clack rail
         // still ends where clack ends it — `outro` draws the `└` that closes
         // the box, and rows printed into the middle of that break it. This is
