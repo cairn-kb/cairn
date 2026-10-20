@@ -174,15 +174,20 @@ Cursor's *user-level* rules live in its settings rather than a file, so global
 scope prints that block for you to paste. Project-level Cursor rules are a real
 file and get written.
 
-Codex and Claude Desktop each keep one config for every project, so `init`
-writes theirs at either scope. Codex reads a project's `AGENTS.md` itself; when
+Codex and Claude Desktop each keep one config for the whole machine, so `init`
+writes theirs only when you run it in a terminal (at either scope) or pass
+`--global`. A `--yes` or scripted project-scope run leaves them alone and
+says so in one line. Codex reads a project's `AGENTS.md` itself; when
 the project uses `CLAUDE.md` instead, the rules also go in `~/.codex/AGENTS.md`.
 Claude Desktop has no instructions file — paste the printed block into a Claude
 project — and only loads a new server after you quit it completely and reopen it.
 
 `init` never clobbers. Existing MCP servers are preserved, the instructions sit
 between `<!-- cairn:start -->` sentinels so re-running updates in place, and a
-config file it cannot parse aborts the run rather than being overwritten.
+config file it cannot parse aborts the run rather than being overwritten. The
+one exception is a Codex or Claude Desktop config cairn can't safely edit: that
+agent is skipped, the file is left as it is, and `init` prints the cairn entry
+for you to add by hand while it configures the rest.
 
 Restart the agent afterwards so it picks up the new MCP server.
 

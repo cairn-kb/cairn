@@ -11,7 +11,11 @@
 - `cairn init` now configures Codex and Claude Desktop: it adds cairn to
   `~/.codex/config.toml` (keeping your other servers and comments) and to
   Claude Desktop's config, and tells you to paste the instructions into a
-  Claude project and restart Claude Desktop.
+  Claude project and restart Claude Desktop. Both configs are machine-wide,
+  so they are written by `cairn init` in a terminal or by `--global`; a
+  `--yes` or scripted project-scope run leaves them alone and says so in one
+  line. If either config uses syntax cairn can't safely edit, that agent is
+  skipped and `init` prints the entry to add by hand.
 - `cairn search` now shows the top results on the terminal, with a count of
   how many more matched — pass `--json` to see all of them.
 - Documents can be marked as machine-generated and tagged with the repository

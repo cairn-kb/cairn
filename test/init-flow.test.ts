@@ -430,6 +430,86 @@ test("a non-interactive run proves, fills and asks nothing", async () => {
   expect((await readConfig(root))?.initCompletedAt).toBeNull()
 })
 
+// --- machine-wide agents --------------------------------------------------------
+
+/** A non-interactive project run's output, with this run's temp dirs named. */
+async function quietRun(): Promise<string[]> {
+  lines = []
+  await runInitCommand(await deps({ interactive: false, repo: null }))
+  return lines.map((l) => l.replaceAll(repoRoot, "<repo>").replaceAll(home, "<home>").replaceAll(root, "<root>"))
+}
+
+test("--yes at project scope leaves Codex alone and says so in exactly one line", async () => {
+  const without = await quietRun()
+  for (const d of [home, repoRoot, root]) await rm(d, { recursive: true, force: true })
+  home = await mkdtemp(join(tmpdir(), "cairn-flow-home-"))
+  repoRoot = await mkdtemp(join(tmpdir(), "cairn-flow-repo-"))
+  root = await mkdtemp(join(tmpdir(), "cairn-flow-root-"))
+  await mkdir(join(home, ".claude"), { recursive: true })
+  await mkdir(join(home, ".codex"), { recursive: true })
+  const withCodex = await quietRun()
+
+  const extra = withCodex.filter((l) => !without.includes(l))
+  expect(extra.length).toBe(1)
+  expect(withCodex.length).toBe(without.length + 1)
+  expect(extra[0]).toContain("Codex")
+  expect(extra[0]).toContain("cairn init")
+  expect(extra[0]).toContain("--global")
+  expect(await readdir(join(home, ".codex"))).toEqual([])
+})
+
+test("--yes at project scope on a Codex-only machine names Codex and writes nothing", async () => {
+  await rm(join(home, ".claude"), { recursive: true, force: true })
+  await mkdir(join(home, ".codex"), { recursive: true })
+  const outcome = await runInitCommand(await deps({ interactive: false, repo: null }))
+  expect(outcome).toBe("no-agent")
+  expect(said()).toContain("Codex")
+  expect(said()).toContain("--global")
+  expect(said()).not.toContain("No supported agent found")
+  expect(await readdir(join(home, ".codex"))).toEqual([])
+  expect(existsSync(join(repoRoot, ".mcp.json"))).toBe(false)
+})
+
+test("an interactive project run configures and proves Codex", async () => {
+  await writeDocs(repoRoot, FOUR)
+  await mkdir(join(home, ".codex"), { recursive: true })
+  let proved = 0
+  await runInitCommand(
+    await deps({
+      handshake: async () => {
+        proved++
+        return [...EXPECTED_TOOLS]
+      },
+    }),
+  )
+  expect(existsSync(join(home, ".codex", "config.toml"))).toBe(true)
+  expect(proved).toBe(2)
+  expect(said()).not.toContain("--global")
+})
+
+test("a Codex config cairn can't edit is skipped with a warning, and Claude Code still proved", async () => {
+  await writeDocs(repoRoot, FOUR)
+  await mkdir(join(home, ".codex"), { recursive: true })
+  const toml = "when = 1979-05-27T07:32:00Z\n"
+  await writeFile(join(home, ".codex", "config.toml"), toml)
+  const proved: string[] = []
+  const outcome = await runInitCommand(
+    await deps({
+      handshake: async (e) => {
+        proved.push(e.command)
+        return [...EXPECTED_TOOLS]
+      },
+    }),
+  )
+  expect(outcome).toBe("written")
+  expect(await readFile(join(home, ".codex", "config.toml"), "utf-8")).toBe(toml)
+  expect(said()).toContain(`cairn couldn't edit ${join(home, ".codex", "config.toml")}`)
+  expect(said()).toContain("[mcp_servers.cairn]")
+  expect(proved.length).toBe(1)
+  expect(said()).not.toContain("Codex —")
+  expect(existsSync(join(repoRoot, ".mcp.json"))).toBe(true)
+})
+
 // --- dry run ------------------------------------------------------------------
 
 test("--dry-run prints both plans and writes nothing", async () => {

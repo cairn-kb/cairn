@@ -468,11 +468,11 @@ test("a failed replacement leaves the original alone and cleans up after itself"
 
 // --- Codex and Claude Desktop ---------------------------------------------
 
-function opts(cwd: string, scope: "global" | "project") {
+function opts(cwd: string, scope: "global" | "project", interactive = true) {
   return {
     home, cwd, cliPath: "/abs/cli.ts", scope, dryRun: true,
     bunPath: "/opt/homebrew/bin/bun", execPath: "/opt/homebrew/bin/bun",
-    cairnRoot: "/tmp/cairn-root", platform: "linux" as const,
+    cairnRoot: "/tmp/cairn-root", platform: "linux" as const, interactive,
   }
 }
 
@@ -529,16 +529,41 @@ test("Codex at project scope does not touch ~/.codex/AGENTS.md when the project 
   }
 })
 
-test("an invalid Codex config aborts the whole run with nothing written", async () => {
+const HAND_EDIT = (path: string) =>
+  `cairn couldn't edit ${path} (it may use syntax cairn can't safely edit) — add the cairn server by hand:`
+
+/** A global run on a machine with Claude Code and Codex, against `toml`. */
+async function codexRefused(toml: string) {
   await mkdir(join(home, ".claude"))
   await mkdir(join(home, ".codex"))
-  await writeFile(join(home, ".codex", "config.toml"), "[mcp_servers.other]\ncommand = \n", "utf-8")
-  await expect(runInit({ ...opts(home, "global"), dryRun: false })).rejects.toThrow(
-    "could not parse existing Codex config as TOML",
-  )
-  expect(await readFile(join(home, ".codex", "config.toml"), "utf-8")).toBe("[mcp_servers.other]\ncommand = \n")
-  expect(await Bun.file(join(home, ".claude.json")).exists()).toBe(false)
-  expect(await Bun.file(join(home, ".claude", "CLAUDE.md")).exists()).toBe(false)
+  const cfg = join(home, ".codex", "config.toml")
+  await writeFile(cfg, toml, "utf-8")
+  const plan = await planInit({ ...opts(home, "global"), dryRun: false })
+  const result = await runInit({ ...opts(home, "global"), dryRun: false })
+  expect(await readFile(cfg, "utf-8")).toBe(toml)
+  const warning = result.warnings.find((w) => w.includes(HAND_EDIT(cfg)))
+  expect(warning).toBeDefined()
+  expect(warning).toContain("[mcp_servers.cairn]")
+  expect(warning).toContain('CAIRN_ROOT = "/tmp/cairn-root"')
+  // Codex is skipped — not configured, not proved — and nothing else is.
+  expect(plan.agents).toEqual(["claude"])
+  expect(plan.configs.map((c) => c.agent)).toEqual(["claude"])
+  expect(plan.changes.some((c) => c.path.startsWith(join(home, ".codex")))).toBe(false)
+  expect(JSON.parse(await readFile(join(home, ".claude.json"), "utf-8")).mcpServers.cairn).toBeDefined()
+  expect(await readFile(join(home, ".claude", "CLAUDE.md"), "utf-8")).toContain("team_knowledge_map")
+}
+
+test("an invalid Codex config is left untouched, with the server to add by hand, and the rest written", async () => {
+  await codexRefused("[mcp_servers.other]\ncommand = \n")
+})
+
+test("a valid Codex config Bun's TOML parser rejects is skipped the same way", async () => {
+  // Datetimes are valid TOML; Bun's parser does not accept them.
+  await codexRefused('model = "o4"\nlast_seen = 1979-05-27T07:32:00Z\n')
+})
+
+test("a cairn server written as an inline table is skipped the same way", async () => {
+  await codexRefused('[mcp_servers]\ncairn = { command = "/old/cairn", args = ["mcp"] }\n')
 })
 
 for (const scope of ["global", "project"] as const) {
@@ -561,9 +586,63 @@ for (const scope of ["global", "project"] as const) {
   })
 }
 
-test("a malformed Claude Desktop config aborts without writing", async () => {
+test("a malformed Claude Desktop config is left untouched, with the server to add by hand", async () => {
+  await mkdir(join(home, ".claude"))
   await mkdir(join(home, ".config", "Claude"), { recursive: true })
   await writeFile(desktopCfg(), "{ broken", "utf-8")
-  await expect(runInit({ ...opts(home, "global"), dryRun: false })).rejects.toThrow("could not parse")
+  const plan = await planInit({ ...opts(home, "global"), dryRun: false })
+  const result = await runInit({ ...opts(home, "global"), dryRun: false })
   expect(await readFile(desktopCfg(), "utf-8")).toBe("{ broken")
+  const warning = result.warnings.find((w) => w.includes(HAND_EDIT(desktopCfg())))
+  expect(warning).toBeDefined()
+  expect(warning).toContain('"mcpServers"')
+  expect(warning).toContain('"CAIRN_ROOT": "/tmp/cairn-root"')
+  expect(plan.agents).toEqual(["claude"])
+  expect(plan.configs.map((c) => c.agent)).toEqual(["claude"])
+  // Its paste and restart steps go with it.
+  expect(plan.printOnly.join(" ")).not.toContain("Claude Desktop")
+  expect(plan.nextSteps.join(" ")).not.toContain("Claude Desktop")
+  expect(await Bun.file(join(home, ".claude.json")).exists()).toBe(true)
+})
+
+// --- machine-wide config and non-interactive project scope -----------------
+
+test("a non-interactive project run leaves Codex and Claude Desktop alone", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  await mkdir(join(home, ".claude"))
+  await mkdir(join(home, ".codex"))
+  await mkdir(join(home, ".config", "Claude"), { recursive: true })
+  // CLAUDE.md is the case that would otherwise add ~/.codex/AGENTS.md.
+  await writeFile(join(repo, "CLAUDE.md"), "# mine\n", "utf-8")
+  try {
+    const plan = await planInit(opts(repo, "project", false))
+    expect(plan.agents).toEqual(["claude"])
+    expect(plan.notConfigured).toEqual(["codex", "claude-desktop"])
+    expect(plan.changes.every((c) => c.path.startsWith(repo))).toBe(true)
+    expect(plan.configs.map((c) => c.agent)).toEqual(["claude"])
+    expect(plan.printOnly).toEqual([])
+    expect(plan.nextSteps).toEqual([])
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
+test("a non-interactive global run still configures Codex and Claude Desktop", async () => {
+  await mkdir(join(home, ".codex"))
+  await mkdir(join(home, ".config", "Claude"), { recursive: true })
+  const plan = await planInit(opts(home, "global", false))
+  expect(plan.agents).toEqual(["codex", "claude-desktop"])
+  expect(plan.notConfigured).toEqual([])
+})
+
+test("an interactive project run configures them and leaves nothing out", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "cairn-repo-"))
+  await mkdir(join(home, ".codex"))
+  try {
+    const plan = await planInit(opts(repo, "project", true))
+    expect(plan.agents).toEqual(["codex"])
+    expect(plan.notConfigured).toEqual([])
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
 })

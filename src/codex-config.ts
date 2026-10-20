@@ -91,7 +91,8 @@ function withoutCairn(text: string): string[] {
   return kept
 }
 
-function block(entry: McpServerEntry): string {
+/** The cairn server as Codex config text — also what a person pastes by hand. */
+export function codexBlock(entry: McpServerEntry): string {
   const lines = [
     `[mcp_servers.${NAME}]`,
     `command = ${str(entry.command)}`,
@@ -128,7 +129,7 @@ export function mergeCodexConfig(existing: string, entry: McpServerEntry): strin
   }
 
   const rest = withoutCairn(existing).join("\n").replace(/\s+$/, "")
-  const out = (rest === "" ? "" : `${rest}\n\n`) + block(entry) + "\n"
+  const out = (rest === "" ? "" : `${rest}\n\n`) + codexBlock(entry) + "\n"
 
   // The edit is textual, so check its result as data: cairn exactly as
   // given, and everything else exactly as it was. Anything else — a cairn
