@@ -126,6 +126,17 @@ export class FileStore implements Store {
    * `listDocuments()` the one time they disagree. Equal counts are trusted —
    * the same trust the FTS `documents` index already gets without a recount
    * on every open.
+   *
+   * Two limits this does not try to close. A corpus holding two document
+   * files that happen to share one frontmatter `id` collapses to a single
+   * `document_keys` row (its primary key), so the row count sits below the
+   * file count forever and this rebuilds on every single `init()` rather
+   * than once — a pre-existing hazard of trusting frontmatter `id` at all,
+   * not one this table introduces. And this only runs at `init()`: a document
+   * another process adds to disk while this one is already open — an older
+   * cairn binary that writes files without keeping this index, or a second
+   * process racing this one — is invisible to `document_keys` until the next
+   * open, not the next write.
    */
   private async healKeyTable(): Promise<void> {
     const { n } = this.db.query("SELECT count(*) AS n FROM document_keys").get() as { n: number }
@@ -141,17 +152,39 @@ export class FileStore implements Store {
     )
   }
 
-  private async rebuildKeyTable(): Promise<void> {
-    this.db.run("DELETE FROM document_keys")
-    for (const doc of await this.listDocuments()) {
-      this.indexDocumentKey(doc)
-    }
+  /**
+   * Replaces every row, optionally from a caller-supplied `docs` (so
+   * `rebuildIndex`, which already pays for one `listDocuments()` for the FTS
+   * table, does not pay for a second).
+   *
+   * `listDocuments()` is resolved BEFORE anything is deleted, and the delete
+   * plus every insert then run inside one synchronous `this.db.transaction`,
+   * with no `await` between them. Doing the delete first and awaiting
+   * `listDocuments()` after — this table's first version — left
+   * `document_keys` empty and COMMITTED for the whole directory read: a
+   * concurrent `importDocument` sharing this connection (another request in
+   * the same process, mid-rebuild) could run its lookup in that window,
+   * find no keys at all, and write a duplicate for a document that was on
+   * disk the entire time. Reading first and never `await`ing mid-transaction
+   * closes that window — every other query on this connection now sees
+   * either all the old rows or all the new ones, never neither.
+   */
+  private async rebuildKeyTable(docs?: Document[]): Promise<void> {
+    const all = docs ?? (await this.listDocuments())
+    const replace = this.db.transaction((rows: Document[]) => {
+      this.db.run("DELETE FROM document_keys")
+      for (const doc of rows) this.indexDocumentKey(doc)
+    })
+    replace(all)
   }
 
   /**
-   * The newest `document_keys` row matching `where` (`ORDER BY created DESC
-   * LIMIT 1`, the same sort `listDocuments()` used plus `find()`'s "first hit
-   * wins"), loaded as a `Document` — or null, for no row.
+   * The newest `document_keys` row matching `where` (`ORDER BY created DESC,
+   * id DESC LIMIT 1` — the same sort `listDocuments()` used plus `find()`'s
+   * "first hit wins", with `id` appended only to break a tie between two
+   * imports whose `created` timestamps land in the same millisecond, which
+   * `created DESC` alone leaves to SQLite to order however it likes), loaded
+   * as a `Document` — or null, for no row.
    *
    * A row whose document is gone, or whose `source`/`hash` no longer agrees
    * with what the row says, means the key table drifted from disk — a
@@ -167,7 +200,9 @@ export class FileStore implements Store {
     rebuilt = false,
   ): Promise<Document | null> {
     const row = this.db
-      .query(`SELECT id, source, hash FROM document_keys WHERE ${where} ORDER BY created DESC LIMIT 1`)
+      .query(
+        `SELECT id, source, hash FROM document_keys WHERE ${where} ORDER BY created DESC, id DESC LIMIT 1`,
+      )
       .get(...params) as { id: string; source: string | null; hash: string } | null
     if (!row) return null
     const doc = await this.getDocument(row.id)
@@ -801,7 +836,6 @@ export class FileStore implements Store {
   async rebuildIndex(): Promise<{ claims: number; documents: number }> {
     this.db.run("DELETE FROM claims")
     this.db.run("DELETE FROM documents")
-    this.db.run("DELETE FROM document_keys")
     let claims = 0
     let documents = 0
     for (const status of STATUSES) {
@@ -810,9 +844,15 @@ export class FileStore implements Store {
         claims++
       }
     }
-    for (const doc of await this.listDocuments()) {
+    // One `listDocuments()` read, handed to `rebuildKeyTable` rather than
+    // read a second time: its own delete-then-reinsert of `document_keys`
+    // still happens inside one synchronous transaction, same as a heal or a
+    // stale-hit rebuild, so a concurrent `importDocument` never observes the
+    // key table empty while `cairn rebuild` is running.
+    const docs = await this.listDocuments()
+    await this.rebuildKeyTable(docs)
+    for (const doc of docs) {
       this.indexDocument(doc)
-      this.indexDocumentKey(doc)
       documents++
     }
     return { claims, documents }

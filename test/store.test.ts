@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
-import { appendFile, mkdtemp, rename, rm, unlink } from "node:fs/promises"
+import { appendFile, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { notAdoptableMessage } from "@cairn-kb/protocol/event-kinds"
@@ -280,6 +280,62 @@ test("rebuildIndex restores the key table", async () => {
   const result = await store.importDocument({ title: "T", text: "same text", source: "a.md" })
   expect(result.outcome).toBe("unchanged")
   expect(result.document.id).toBe(document.id)
+})
+
+test("a document hand-edited to a new source self-heals rather than mismatching", async () => {
+  const { document } = await store.importDocument({ title: "T", text: "same text", source: "a.md" })
+  // Rewrite the file's frontmatter directly, bypassing the store entirely —
+  // `document_keys` still says `source: a.md` while the file on disk now
+  // says `renamed.md`.
+  const path = join(root, "documents", `${document.id}.md`)
+  const raw = await readFile(path, "utf-8")
+  await writeFile(path, raw.replace("a.md", "renamed.md"), "utf-8")
+
+  // The old source no longer names anything real: a fresh document, not a
+  // throw and not a false match onto the renamed file.
+  const byOldSource = await store.importDocument({ title: "T", text: "same text", source: "a.md" })
+  expect(byOldSource.outcome).toBe("created")
+  expect(byOldSource.document.id).not.toBe(document.id)
+
+  // The new source resolves straight to the renamed document — the stale
+  // row for the old source is what triggered the heal that made this match.
+  const byNewSource = await store.importDocument({ title: "T", text: "same text", source: "renamed.md" })
+  expect(byNewSource.outcome).toBe("unchanged")
+  expect(byNewSource.document.id).toBe(document.id)
+})
+
+// --- rebuildKeyTable must never leave document_keys observably empty ------
+//
+// The table's first version deleted every row, then awaited `listDocuments()`
+// before reinserting any of them — a window during which any other query on
+// this connection saw an empty table. Fixed by reading first and running the
+// delete-plus-reinsert as one synchronous transaction; this is the regression
+// test for that fix, not a demonstration that the old code failed (it did not
+// reliably fail on every run, which was the danger).
+
+test("a stale-triggered rebuild does not blind a concurrent import of an untouched source", async () => {
+  const { document: a } = await store.importDocument({ title: "A", text: "doc a", source: "a.md" })
+  const { document: b } = await store.importDocument({ title: "B", text: "doc b", source: "b.md" })
+  // Corrupt only a's row, so re-importing "a.md" is the call that detects
+  // staleness and drives `rebuildKeyTable`. "b.md"'s row is untouched and
+  // must still resolve correctly while that rebuild is in flight.
+  ;(store as unknown as { db: { run(sql: string, params: unknown[]): void } }).db.run(
+    "UPDATE document_keys SET hash = ? WHERE id = ?",
+    ["not-the-real-hash", a.id],
+  )
+  // Fired together, not awaited one after the other — same pattern as the
+  // two-concurrent-adoptions case in store-contract.ts, and for the same
+  // reason: both reach their own awaits before either writes, so this needs
+  // no timing trick.
+  const [resultA, resultB] = await Promise.all([
+    store.importDocument({ title: "A", text: "doc a", source: "a.md" }),
+    store.importDocument({ title: "B", text: "doc b", source: "b.md" }),
+  ])
+  expect(resultA.outcome).toBe("unchanged")
+  expect(resultA.document.id).toBe(a.id)
+  expect(resultB.outcome).toBe("unchanged")
+  expect(resultB.document.id).toBe(b.id)
+  expect((await store.listDocuments()).length).toBe(2)
 })
 
 // --- adoptImport coverage the generic Store contract cannot exercise ------
