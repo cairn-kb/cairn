@@ -1130,6 +1130,10 @@ test("createTools(...).kbSearch alone never calls onSearchResult — only the se
   // never count toward the first-answer metric.
   await store.importDocument({ title: "d", text: "Quetzalcoatl", source: "d.md" })
   const seen: number[] = []
+  // A server exists, over the SAME store, with the hook wired for real —
+  // proving `seen` has a live wire to a spy — but this test deliberately
+  // never routes its call through it.
+  createMcpServer(store, log, { onSearchResult: async (n) => { seen.push(n) } })
   const t = createTools(store, log)
   const result = await t.kbSearch("Quetzalcoatl")
   expect(result.hits.length).toBe(1)

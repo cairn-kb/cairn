@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { newConfig, readConfig, writeConfig } from "../src/config"
+import { newConfig, readConfig, updateConfig, writeConfig } from "../src/config"
 
 let root: string
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "cairn-cfg-")) })
@@ -223,4 +223,40 @@ test("unparseable first-answer metric values read as defaults", async () => {
   expect(cfg?.initCompletedAt).toBeNull()
   expect(cfg?.firstAnswerAt).toBeNull()
   expect(cfg?.firstAnswerReported).toBe(false)
+})
+
+// --- updateConfig: patch a field without clobbering a concurrent write ----
+
+test("updateConfig re-reads before writing, so it carries through a field it does not own", async () => {
+  await writeConfig(root, { ...newConfig(true), firstAnswerAt: "2026-01-01T00:00:00.000Z" })
+  await updateConfig(root, () => ({ lastSentAt: "2026-01-02T00:00:00.000Z" }))
+  const cfg = await readConfig(root)
+  expect(cfg?.lastSentAt).toBe("2026-01-02T00:00:00.000Z")
+  // Untouched, because the patch never named it and updateConfig read a
+  // fresh copy to merge onto rather than a snapshot taken earlier.
+  expect(cfg?.firstAnswerAt).toBe("2026-01-01T00:00:00.000Z")
+})
+
+test("updateConfig sees a write that landed after its caller's own earlier read", async () => {
+  await writeConfig(root, newConfig(true))
+  // Simulates the exact hazard this exists for: a caller holding an old
+  // snapshot (`stale`, read before the line below) must never reach this
+  // helper with it — `updateConfig` ignores any snapshot and re-reads.
+  const stale = await readConfig(root)
+  await writeConfig(root, { ...stale!, firstAnswerAt: "2026-01-01T00:00:00.000Z" })
+  await updateConfig(root, () => ({ lastSentAt: "2026-01-02T00:00:00.000Z" }))
+  const cfg = await readConfig(root)
+  expect(cfg?.firstAnswerAt).toBe("2026-01-01T00:00:00.000Z")
+  expect(cfg?.lastSentAt).toBe("2026-01-02T00:00:00.000Z")
+})
+
+test("updateConfig skips the write when the patch declines", async () => {
+  await writeConfig(root, { ...newConfig(true), lastSentAt: "2026-01-01T00:00:00.000Z" })
+  await updateConfig(root, () => null)
+  expect((await readConfig(root))?.lastSentAt).toBe("2026-01-01T00:00:00.000Z")
+})
+
+test("updateConfig on a missing config is a no-op, not a crash", async () => {
+  await expect(updateConfig(root, () => ({ lastSentAt: "x" }))).resolves.toBeUndefined()
+  expect(await readConfig(root)).toBeNull()
 })
