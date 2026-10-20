@@ -1,6 +1,6 @@
 {
   "name": "@cairn-kb/cli",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Team knowledge for AI agents: agents propose, a human approves what lands.",
   "license": "Apache-2.0",
   "repository": "github:cairn-kb/cairn",
