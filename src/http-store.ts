@@ -336,8 +336,8 @@ export class HttpStore implements Store {
    * Not wired to the hosted service yet — refuses every write with
    * `agent_documents_off` until the route exists. Replaced once the hosted
    * side can accept a generated document; the signature is correct now so
-   * `packages/mcp`'s write-document tool (a later task) can call it against
-   * either store without knowing which one it has.
+   * the write-document tool can call it against either store without
+   * knowing which one it has.
    */
   async writeGenerated(_input: GeneratedDocumentInput): Promise<ImportDocumentResult> {
     throw new Error(generatedRefusalMessage("agent_documents_off"))

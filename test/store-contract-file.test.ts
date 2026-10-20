@@ -53,9 +53,9 @@ for (const c of [...CONTRACT_CASES, ...DOCUMENT_CONTRACT_CASES]) {
 
 /**
  * `writeGenerated` only, held here rather than in `./store-contract`:
- * `HttpStore` cannot write a generated document until the hosted side does
- * (Task 11 moves these into the shared contract once it can), so a FileStore-
- * only test file is where this belongs until then.
+ * `HttpStore` cannot write a generated document until the hosted service
+ * accepts agent writes. These move into the shared contract once it can, so
+ * a FileStore-only test file is where this belongs until then.
  */
 async function withFileStore(run: (store: FileStore) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "cairn-contract-"))

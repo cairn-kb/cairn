@@ -32,9 +32,8 @@ test("validateGenerated refuses an uppercase slug", () => {
 })
 
 test("validateGenerated refuses a repo with more than one slash, or a space", () => {
-  // Controller ruling: REPO_PATTERN is the shipped `owner/name` or `name`
-  // pattern from src/mcp.ts, so a single slash (`owner/name`) is VALID — only
-  // a second slash or a disallowed character is refused.
+  // REPO_PATTERN is `owner/name` or `name`, so a single slash (`owner/name`)
+  // is VALID — only a second slash or a disallowed character is refused.
   expect(validateGenerated({ ...INPUT, repo: "a/b/c" })).toBe("invalid_repo")
   expect(validateGenerated({ ...INPUT, repo: "a b" })).toBe("invalid_repo")
 })
@@ -63,7 +62,7 @@ test("SLUG_PATTERN and REPO_PATTERN are exported for callers that validate ahead
   expect(REPO_PATTERN.test("a/b/c")).toBe(false)
 })
 
-test("the invalid_slug and invalid_repo sentences reuse project 1's wording, without the echoed value", () => {
+test("the invalid_slug and invalid_repo sentences reuse the write-document tool's wording, without the echoed value", () => {
   expect(generatedRefusalMessage("invalid_slug")).toBe(
     "team_knowledge_write_document: slug must be lowercase letters, digits and hyphens only, " +
       'starting with a letter or digit, at most 64 characters (no "/", ".." or uppercase).',

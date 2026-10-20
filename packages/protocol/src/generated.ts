@@ -25,7 +25,9 @@ export function generatedSource(repo: string, slug: string): string {
  * held to the shape that alone rules out "/" and ".." without a second,
  * separate traversal check that could drift from it: lowercase letters,
  * digits and hyphens, starting with a letter or digit, at most 64
- * characters. The shipped pattern from `assertSlug` (src/mcp.ts).
+ * characters. The pattern the write-document tool has always checked a slug
+ * against, moved here so both stores can ask the one function rather than
+ * each keeping its own copy of the rule.
  */
 export const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 
@@ -35,8 +37,9 @@ export const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
  * equality, never split apart or joined onto a filesystem path. So it is
  * allowed the shape of an actual repository name, `owner/name` or just
  * `name`: each part letters of either case, digits, ".", "_" and "-", at
- * most one "/", 1 to 100 characters in all. The shipped pattern from
- * `assertRepo` (src/mcp.ts).
+ * most one "/", 1 to 100 characters in all. The pattern the write-document
+ * tool has always checked a repo against, moved here for the same reason
+ * `SLUG_PATTERN` is.
  */
 export const REPO_PATTERN = /^(?=.{1,100}$)[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)?$/
 
@@ -99,13 +102,12 @@ export function validateGenerated(input: GeneratedDocumentInput): GeneratedRefus
  * keeps two copies of the same literal in two files from drifting the
  * moment either is edited alone.
  *
- * `invalid_slug` and `invalid_repo` reuse project 1's wording from
- * `assertSlug`/`assertRepo` (src/mcp.ts) verbatim, less the echoed `got
- * "<value>"` — this function takes only the code, never the value that
- * failed. `agent_documents_off` and `generated_daily_cap` name no hosted
- * numbers or internals: a team owner turned writes off, or the team space's
- * daily limit is reached, is the whole of what an agent needs to act on
- * either.
+ * `invalid_slug` and `invalid_repo` reuse the wording the write-document
+ * tool has always used, less the echoed `got "<value>"` — this function
+ * takes only the code, never the value that failed. `agent_documents_off`
+ * and `generated_daily_cap` name no hosted numbers or internals: a team
+ * owner turned writes off, or the team space's daily limit is reached, is
+ * the whole of what an agent needs to act on either.
  */
 export function generatedRefusalMessage(code: GeneratedRefusalCode): string {
   switch (code) {
