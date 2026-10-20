@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Added
+
+- `cairn init` asks which agents to connect, with the ones it found
+  pre-selected, and `--agents claude,cursor,codex,other` chooses without
+  asking. "Other MCP client" writes the shared instructions and prints the
+  server config to paste into that client.
+
+### Changed
+
+- `cairn init`'s import step is one question — Yes, Choose folders or Skip —
+  shows progress while it imports and ends with a short summary; in a team
+  space it sends several documents at once.
+- `cairn init` no longer configures Claude Desktop unless asked with
+  `--agents claude-desktop`, which is what `cairn doctor` now suggests on a
+  machine where Claude Desktop is the only agent installed.
+
+### Fixed
+
+- Importing into a local space no longer slows down as the space grows —
+  each document is found through an index instead of by reading every
+  stored document. The index is built once, on the first command after
+  upgrading, which reads every stored document that one time.
+- A document file that cannot be read no longer stops a local space from
+  opening. Imports that could duplicate it stop and say which file to fix
+  or remove.
+
 ## [0.9.1] — 2026-10-20
 
 ### Added

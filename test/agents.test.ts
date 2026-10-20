@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createUi } from "../src/ui"
-import { ALL_AGENTS, detectAgents, desktopConfigPath, formatAgents } from "../src/agents"
+import { detectAgents, desktopConfigPath, formatAgents, INIT_AGENTS, parseAgentsFlag } from "../src/agents"
 
 const plainUi = createUi(false)
 
@@ -85,13 +85,17 @@ test("claude desktop is not reported on win32 with no appData, even with the dir
 
 // --- formatAgents ------------------------------------------------------------
 
-test("formatAgents prints one line per agent, in ALL_AGENTS order", () => {
+test("formatAgents prints one line per agent init offers, in INIT_AGENTS order", () => {
   const lines = formatAgents(["claude", "codex"], plainUi)
-  expect(lines).toHaveLength(ALL_AGENTS.length)
+  expect(lines).toHaveLength(INIT_AGENTS.length)
   expect(lines[0]).toBe("✓ Claude Code")
   expect(lines[1]).toBe("  Cursor — not found")
   expect(lines[2]).toBe("✓ Codex")
-  expect(lines[3]).toBe("  Claude Desktop — not found")
+})
+
+test("formatAgents does not list Claude Desktop, even when it was detected", () => {
+  const lines = formatAgents(["claude", "claude-desktop"], plainUi)
+  expect(lines.join("\n")).not.toContain("Claude Desktop")
 })
 
 test("formatAgents with nothing found dims every line", () => {
@@ -100,6 +104,48 @@ test("formatAgents with nothing found dims every line", () => {
 })
 
 test("formatAgents with everything found ticks every line", () => {
-  const lines = formatAgents(ALL_AGENTS, plainUi)
+  const lines = formatAgents(INIT_AGENTS, plainUi)
   for (const line of lines) expect(line.startsWith("✓")).toBe(true)
+})
+
+// --- INIT_AGENTS and --agents ------------------------------------------------
+
+test("init offers Claude Code, Cursor and Codex, and not Claude Desktop", () => {
+  expect(INIT_AGENTS).toEqual(["claude", "cursor", "codex"])
+})
+
+test("parseAgentsFlag is null when the flag is absent", () => {
+  expect(parseAgentsFlag(["--yes", "--global"])).toBeNull()
+})
+
+test("parseAgentsFlag reads a comma-separated list", () => {
+  expect(parseAgentsFlag(["--agents", "claude,codex"])).toEqual({ agents: ["claude", "codex"], other: false })
+})
+
+test("parseAgentsFlag takes other as the other MCP client, not an agent", () => {
+  expect(parseAgentsFlag(["--agents", "cursor,other"])).toEqual({ agents: ["cursor"], other: true })
+  expect(parseAgentsFlag(["--agents", "other"])).toEqual({ agents: [], other: true })
+})
+
+test("parseAgentsFlag still accepts claude-desktop by name", () => {
+  expect(parseAgentsFlag(["--agents", "claude-desktop"])).toEqual({ agents: ["claude-desktop"], other: false })
+})
+
+test("parseAgentsFlag tolerates spaces and repeats", () => {
+  expect(parseAgentsFlag(["--agents", " claude , claude ,cursor"])).toEqual({
+    agents: ["claude", "cursor"], other: false,
+  })
+})
+
+test("parseAgentsFlag names the choices for an unknown value, without advertising claude-desktop", () => {
+  expect(() => parseAgentsFlag(["--agents", "claude,vscode"])).toThrow(
+    'unknown agent "vscode" — choose from claude, cursor, codex, other',
+  )
+})
+
+test("parseAgentsFlag refuses an empty list", () => {
+  expect(() => parseAgentsFlag(["--agents", ""])).toThrow(/claude, cursor, codex, other/)
+  expect(() => parseAgentsFlag(["--agents", ","])).toThrow(/claude, cursor, codex, other/)
+  expect(() => parseAgentsFlag(["--agents"])).toThrow(/claude, cursor, codex, other/)
+  expect(() => parseAgentsFlag(["--agents", "--yes"])).toThrow(/claude, cursor, codex, other/)
 })

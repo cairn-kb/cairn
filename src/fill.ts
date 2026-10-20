@@ -8,7 +8,7 @@
 import { join, relative, sep } from "node:path"
 import type { Agent } from "./agents"
 import type { Mode } from "./config"
-import { finishTally, importFile, newTally, tally, type ImportSummary } from "./import-file"
+import { finishTally, importFile, newTally, tally, type ImportFileResult, type ImportSummary } from "./import-file"
 import { IMPORT_SKILL, IMPORT_SKILL_DESCRIPTION } from "./import-skill"
 import { writeAtomic, type Scope } from "./init"
 import type { RepoInfo } from "./repo"
@@ -101,29 +101,66 @@ export interface FillFailure {
 }
 
 /**
+ * Run `fn` over `items` with at most `limit` calls in flight, starting each
+ * as soon as a slot frees up. `fn` must not reject: a failure is the
+ * caller's to record, so one bad item never stops the others.
+ */
+async function eachLimited<T>(items: T[], limit: number, fn: (item: T, index: number) => Promise<void>): Promise<void> {
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++
+      await fn(items[i]!, i)
+    }
+  }
+  const workers = Math.min(Math.max(1, Math.floor(limit)), items.length)
+  await Promise.all(Array.from({ length: workers }, worker))
+}
+
+/**
  * Import the fill plan's files, tagged with its repo, then write its skills.
  * A file that cannot be read or stored is recorded in `failed` and the rest
  * carry on: one unreadable file must not cost the person every other one,
  * or the first answer that follows.
+ *
+ * `concurrency` is how many imports run at once. One by default: the local
+ * store has no per-call network cost, and one write at a time keeps its
+ * adopt-by-hash match free of races. Against a team space each import is a
+ * round trip to the hosted service, which has no bulk route, so a few at once
+ * is what keeps a large first import from crawling. Either way the results
+ * are counted in plan order once every file is done, so `titles` — and the
+ * first-answer query built from them — do not depend on which finished first.
  */
 export async function applyFill(
   store: Store,
   plan: FillPlan,
   onProgress?: (done: number, total: number) => void,
+  opts: { concurrency?: number } = {},
 ): Promise<ImportSummary & { titles: string[]; failed: FillFailure[] }> {
+  const outcomes: ({ ok: true; result: ImportFileResult } | { ok: false; error: string })[] = []
+  let done = 0
+  await eachLimited(plan.files, opts.concurrency ?? 1, async (path, i) => {
+    try {
+      outcomes[i] = { ok: true, result: await importFile(store, path, importSource(plan.repo, path), plan.repo.label) }
+    } catch (err) {
+      outcomes[i] = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    onProgress?.(++done, plan.files.length)
+  })
   const t = newTally()
   const titles: string[] = []
   const failed: FillFailure[] = []
-  let done = 0
-  for (const path of plan.files) {
+  for (const [i, path] of plan.files.entries()) {
+    const o = outcomes[i]!
     try {
-      const result = await importFile(store, path, importSource(plan.repo, path), plan.repo.label)
-      tally(t, path, result)
-      if (result.outcome !== "empty") titles.push(result.document.title)
+      if (!o.ok) throw new Error(o.error)
+      // Inside the try, as it was when each file was counted as it landed:
+      // an outcome `tally` does not know is that file's failure, not the run's.
+      tally(t, path, o.result)
+      if (o.result.outcome !== "empty") titles.push(o.result.document.title)
     } catch (err) {
       failed.push({ path, error: err instanceof Error ? err.message : String(err) })
     }
-    onProgress?.(++done, plan.files.length)
   }
   const summary = await finishTally(store, t)
   for (const { path, content } of plan.skills) await writeAtomic(path, content)

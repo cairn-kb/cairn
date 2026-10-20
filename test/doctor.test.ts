@@ -55,9 +55,22 @@ test("a missing MCP config on a machine with no agent names the real problem", a
   const r = await checkConfig(deps())
   expect(r.status).toBe("fail")
   expect(r.detail).toContain("no supported agent")
-  expect(r.detail).toContain("~/.claude, ~/.cursor, ~/.codex and Claude Desktop")
+  expect(r.detail).toContain("~/.claude, ~/.cursor and ~/.codex")
+  expect(r.detail).not.toContain("Claude Desktop")
   expect(r.fix).toContain("--project")
-  expect(r.fix).toContain("Claude Code, Cursor, Codex or Claude Desktop")
+  expect(r.fix).toContain("Claude Code, Cursor or Codex")
+})
+
+test("a machine with only Claude Desktop is told to name it, not sent round to a bare cairn init", async () => {
+  // init no longer configures Claude Desktop unless asked, so `cairn init`
+  // alone would find no agent here.
+  await mkdir(join(home, ".config", "Claude"), { recursive: true })
+  const config = await checkConfig(deps({ platform: "linux" }))
+  expect(config.status).toBe("fail")
+  expect(config.detail).not.toContain("no supported agent")
+  expect(config.fix).toBe("cairn init --agents claude-desktop")
+  const telemetry = await checkTelemetry(deps({ platform: "linux" }))
+  expect(telemetry.fix).toBe("cairn init --agents claude-desktop")
 })
 
 test("a config whose command does not exist fails", async () => {

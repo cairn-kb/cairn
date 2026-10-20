@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite"
-import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { absentTerms } from "@cairn-kb/protocol/absence"
 import { makeId, parseClaim, serializeClaim } from "./claims"
@@ -76,8 +76,52 @@ export class AlreadyResolvedError extends Error {
   }
 }
 
+/** A document file that would not parse, as it was when last read. */
+interface Unreadable {
+  name: string
+  mtime: number
+  size: number
+}
+
+/** What `rebuildKeyTable` swaps in: the documents that parsed, and the files that did not. */
+interface KeySnapshot {
+  docs: Document[]
+  unreadable: Unreadable[]
+}
+
+/**
+ * A file's mtime (whole milliseconds, to fit an INTEGER column) and size, or
+ * null if it is gone. Enough to tell that a file recorded as unreadable has
+ * been touched since, without reading it.
+ */
+async function fingerprint(path: string): Promise<{ mtime: number; size: number } | null> {
+  try {
+    const s = await stat(path)
+    return { mtime: Math.trunc(s.mtimeMs), size: s.size }
+  } catch {
+    return null
+  }
+}
+
 export class FileStore implements Store {
   private db!: Database
+
+  /**
+   * How many `rebuildKeyTable` calls are between their directory read and
+   * their swap transaction right now. Nonzero only while that gap is open;
+   * see `writeDocument` and `rebuildKeyTable` for why both need to check it.
+   */
+  private rebuildsInFlight = 0
+  /**
+   * Documents `writeDocument` wrote while `rebuildsInFlight` was nonzero —
+   * folded into the swap transaction below so a rebuild's snapshot, taken
+   * before the write landed, cannot shadow it. Cleared only once the LAST
+   * overlapping rebuild finishes, not the first: a second rebuild's own read
+   * may still be in flight when an earlier one's transaction completes, and
+   * clearing this out from under it would stop capturing writes for the rest
+   * of that read.
+   */
+  private readonly pendingRebuildWrites = new Map<string, Document>()
 
   constructor(
     private root: string,
@@ -108,6 +152,210 @@ export class FileStore implements Store {
     this.db.run(
       "CREATE VIRTUAL TABLE IF NOT EXISTS documents USING fts5(id UNINDEXED, title, text, source UNINDEXED)",
     )
+    this.db.run(
+      "CREATE TABLE IF NOT EXISTS document_keys (id TEXT PRIMARY KEY, source TEXT, hash TEXT NOT NULL, created TEXT NOT NULL)",
+    )
+    this.db.run("CREATE INDEX IF NOT EXISTS document_keys_source ON document_keys (source)")
+    this.db.run("CREATE INDEX IF NOT EXISTS document_keys_hash ON document_keys (hash)")
+    this.db.run(
+      "CREATE TABLE IF NOT EXISTS document_unreadable (name TEXT PRIMARY KEY, mtime INTEGER NOT NULL, size INTEGER NOT NULL)",
+    )
+    await this.healKeyTable()
+  }
+
+  /**
+   * An `index.db` written before `document_keys` existed has no such table —
+   * created empty, above, while the documents it describes already exist on
+   * disk. Trusting that emptiness would make `importDocument` miss every one
+   * of them and write a duplicate for the first re-import of each. So: count
+   * the `*.md` names in `documents/` (a `readdir`, nothing parsed) against
+   * the rows that account for them, and rebuild the one time they disagree.
+   * Equal counts are trusted — the same trust the FTS `documents` index
+   * already gets without a recount on every open. This runs on every open
+   * (every `cairn mcp`, search, `cairn doctor`), which is why the normal path
+   * must never parse a document: that would make opening a space cost a read
+   * of the whole corpus.
+   *
+   * Every file is accounted for by one row in one of two tables: a
+   * `document_keys` row if it parsed when the table was last rebuilt, a
+   * `document_unreadable` row if it did not (see `rebuildKeyTable`). Counting
+   * only `document_keys` would leave a permanently broken file disagreeing
+   * forever and every open redoing the full rebuild. The unreadable rows
+   * carry each file's mtime and size, so the few files they name — and only
+   * those — are stat'ed here: one repaired, replaced or removed since it was
+   * recorded triggers the rebuild that re-reads it, which is how a fixed file
+   * earns its key row back and its unreadable row goes away.
+   *
+   * Two further limits this does not try to close. A corpus holding two
+   * document files that happen to share one frontmatter `id` collapses to a
+   * single `document_keys` row (its primary key), so the counts disagree
+   * forever and this rebuilds on every single `init()` rather than once — a
+   * pre-existing hazard of trusting frontmatter `id` at all, not one this
+   * table introduces. And this only runs at `init()`: a document another
+   * process adds to disk while this one is already open — an older cairn
+   * binary that writes files without keeping this index, or a second process
+   * racing this one — is invisible to `document_keys` until the next open,
+   * not the next write.
+   */
+  private async healKeyTable(): Promise<void> {
+    const dir = join(this.root, "documents")
+    const names = (await readdir(dir)).filter((n) => n.endsWith(".md"))
+    const { n } = this.db.query("SELECT count(*) AS n FROM document_keys").get() as { n: number }
+    const unreadable = this.db
+      .query("SELECT name, mtime, size FROM document_unreadable")
+      .all() as Unreadable[]
+    if (n + unreadable.length !== names.length) return this.rebuildKeyTable()
+    for (const row of unreadable) {
+      const now = await fingerprint(join(dir, row.name))
+      if (!now || now.mtime !== row.mtime || now.size !== row.size) return this.rebuildKeyTable()
+    }
+  }
+
+  private indexDocumentKey(doc: Document): void {
+    this.db.run(
+      "INSERT OR REPLACE INTO document_keys (id, source, hash, created) VALUES (?, ?, ?, ?)",
+      [doc.id, doc.source, doc.hash, doc.created],
+    )
+  }
+
+  /**
+   * `listDocuments()`, tolerant of a file that will never parse — broken
+   * frontmatter YAML, or a `created`/`updated` value `parseDocument` cannot
+   * turn into a date. Retrying buys nothing for a file like that, so
+   * throwing the way `listDocuments()` does would make one bad file a
+   * permanent block on `document_keys`: every `init()` on this root would die
+   * inside the heal, every `matchDocumentKey` stale hit would die trying to
+   * re-derive the table, and `cairn mcp`, search and `cairn doctor`'s space
+   * check would die with them, over a file nothing written here can fix.
+   *
+   * A file skipped here is NOT treated as absent, though. It is returned in
+   * `unreadable`, with the mtime and size it had when read, and
+   * `rebuildKeyTable` records it in `document_unreadable`. It may well be a
+   * document some source was imported as — so `importDocument` refuses to
+   * create anything while such a row exists, rather than miss the broken
+   * file's key and write a duplicate of it. The space still opens and
+   * search still works; only a new document waits until the file is fixed or
+   * removed.
+   *
+   * Only the heal-and-rebuild path below uses this. `listDocuments()` itself
+   * still throws on a corrupt file for every other caller — search,
+   * `rebuildIndex`'s own FTS pass, the document contract suite — because
+   * silently hiding a document from, say, `cairn rebuild`'s count would be a
+   * different kind of lie.
+   */
+  private async listDocumentsTolerant(): Promise<KeySnapshot> {
+    const dir = join(this.root, "documents")
+    const names = (await readdir(dir)).filter((n) => n.endsWith(".md"))
+    const unreadable: Unreadable[] = []
+    const docs = await Promise.all(
+      names.map(async (name) => {
+        const path = join(dir, name)
+        // Stat'ed BEFORE the read: an edit landing between the two then
+        // shows up as a changed fingerprint at the next open, never as a
+        // recorded fingerprint that already matches the edited file.
+        const before = await fingerprint(path)
+        if (!before) return null // removed mid-read: neither row, recounted next open
+        try {
+          return parseDocument(await readFile(path, "utf-8"))
+        } catch {
+          unreadable.push({ name, ...before })
+          return null
+        }
+      }),
+    )
+    return {
+      docs: docs.filter((d): d is Document => d !== null).sort((a, b) => b.created.localeCompare(a.created)),
+      unreadable,
+    }
+  }
+
+  /**
+   * Replaces every row of `document_keys` and `document_unreadable`,
+   * optionally from a caller-supplied snapshot (so `rebuildIndex`, which
+   * already pays for one `listDocuments()` for the FTS table, does not pay
+   * for a second — and, having read strictly, has no unreadable files to
+   * record). Both tables swap in the same transaction: the heal counts them
+   * together, so one replaced without the other would read as a mismatch.
+   *
+   * The read is resolved BEFORE anything is deleted, and the delete plus
+   * every insert then run inside one synchronous `this.db.transaction`, with
+   * no `await` between them. Doing the delete first and awaiting the read
+   * after — this table's first version — left `document_keys` empty and
+   * COMMITTED for the whole directory read: a concurrent `importDocument`
+   * sharing this connection (another request in the same process,
+   * mid-rebuild) could run its lookup in that window, find no keys at all,
+   * and write a duplicate for a document that was on disk the entire time.
+   * Reading first and never `await`ing mid-transaction closes that window —
+   * every other query on this connection now sees either all the old rows or
+   * all the new ones, never neither.
+   *
+   * `rebuildsInFlight` brackets that same read, for a narrower reason: a
+   * `writeDocument` landing inside the window — another document imported
+   * or adopted while THIS rebuild is reading the directory — writes its own
+   * fresh row immediately, but the snapshot this method is about to swap in
+   * was taken before that write happened and does not know about it. Without
+   * `pendingRebuildWrites`, the DELETE below would erase that fresh row (or
+   * the reinsert would overwrite it with whatever stale copy the snapshot
+   * held for the same id) and the write would not reappear until the next
+   * `init()`. Folding those writes in, inside the same transaction and after
+   * the snapshot, makes the freshest copy win either way.
+   */
+  private async rebuildKeyTable(snapshot?: KeySnapshot): Promise<void> {
+    this.rebuildsInFlight++
+    try {
+      const { docs, unreadable } = snapshot ?? (await this.listDocumentsTolerant())
+      const replace = this.db.transaction(() => {
+        this.db.run("DELETE FROM document_keys")
+        this.db.run("DELETE FROM document_unreadable")
+        for (const doc of docs) this.indexDocumentKey(doc)
+        for (const doc of this.pendingRebuildWrites.values()) this.indexDocumentKey(doc)
+        for (const u of unreadable) {
+          this.db.run("INSERT OR REPLACE INTO document_unreadable (name, mtime, size) VALUES (?, ?, ?)", [
+            u.name,
+            u.mtime,
+            u.size,
+          ])
+        }
+      })
+      replace()
+    } finally {
+      this.rebuildsInFlight--
+      if (this.rebuildsInFlight === 0) this.pendingRebuildWrites.clear()
+    }
+  }
+
+  /**
+   * The newest `document_keys` row matching `where` (`ORDER BY created DESC,
+   * id DESC LIMIT 1` — the same sort `listDocuments()` used plus `find()`'s
+   * "first hit wins", with `id` appended only to break a tie between two
+   * imports whose `created` timestamps land in the same millisecond, which
+   * `created DESC` alone leaves to SQLite to order however it likes), loaded
+   * as a `Document` — or null, for no row.
+   *
+   * A row whose document is gone, or whose `source`/`hash` no longer agrees
+   * with what the row says, means the key table drifted from disk — a
+   * document file removed or hand-edited underneath the index, between one
+   * `init()` and the next. Rebuilt from disk and re-asked exactly once rather
+   * than trusted: trusting it risks matching a document that no longer holds
+   * what the row claims, and skipping it with no rebuild risks a duplicate
+   * the next line down would otherwise create.
+   */
+  private async matchDocumentKey(
+    where: string,
+    params: (string | null)[],
+    rebuilt = false,
+  ): Promise<Document | null> {
+    const row = this.db
+      .query(
+        `SELECT id, source, hash FROM document_keys WHERE ${where} ORDER BY created DESC, id DESC LIMIT 1`,
+      )
+      .get(...params) as { id: string; source: string | null; hash: string } | null
+    if (!row) return null
+    const doc = await this.getDocument(row.id)
+    if (doc && doc.source === row.source && doc.hash === row.hash) return doc
+    if (rebuilt) return null
+    await this.rebuildKeyTable()
+    return this.matchDocumentKey(where, params, true)
   }
 
   private path(status: Status, id: string): string {
@@ -551,28 +799,40 @@ export class FileStore implements Store {
    * by `hash` among sourceless (adopted) documents, then create. Reversing the
    * first two would let one edited file claim an unrelated adopted document.
    *
-   * **O(n) per call, so a full-corpus import is O(n²)** — `listDocuments()`
-   * reads and parses every document on disk to find one. Deliberate, and
-   * recorded here because this file's convention is to say why rather than to
-   * leave a reader wondering whether it was noticed: the matching
-   * is on `source` and on `hash`, neither of which the JSONL-plus-files layout
-   * indexes, and the corpus this was built for is tens of documents, not
-   * thousands. The hosted service indexes these and does not share the shape.
-   * If a local space ever grows enough for this to bite, the fix is an index
-   * on those two columns, not a different match order — the order is the part
-   * that must not move.
+   * Looked up through `document_keys`, not `listDocuments()` — that read and
+   * parsed every document on disk to find one, which made a full-corpus
+   * import O(n²). The key table holds exactly what the match needs, `source`
+   * and `hash`, so each lookup is now one indexed query instead of a scan.
+   * Kept honest four ways: written alongside every document
+   * (`writeDocument`), healed on `init()` by comparing its row count (plus
+   * the files recorded as unreadable) against the files on disk, rebuilt wholesale by `cairn rebuild`
+   * (`rebuildIndex`), and — the case those three miss, a document changed or
+   * removed on disk between one `init()` and the next — re-derived from disk
+   * the moment a lookup's row disagrees with the document it names
+   * (`matchDocumentKey`), so a stale hit never falls back to a silent
+   * duplicate.
    */
   async importDocument(input: DocumentInput): Promise<ImportDocumentResult> {
     const hash = await hashText(input.text)
-    const all = await this.listDocuments()
-    // Never for a source-less input: `d.source === input.source` would be
-    // `null === null` and claim whatever adopted document happened to be
-    // first, regardless of its text. A source-less import has no path to match
-    // ON, so it goes straight to the hash branch below -- which is the branch
-    // that is CORRECT for it. (The hosted service behaves the same way: a null
-    // source never matches.)
-    const bySource = input.source === null ? undefined : all.find((d) => d.source === input.source)
+    // Never for a source-less input: `source = ?` with a null parameter would
+    // match whatever adopted document happened to be newest, regardless of
+    // its text. A source-less import has no path to match ON, so it goes
+    // straight to the hash branch below -- which is the branch that is
+    // CORRECT for it. (The hosted service behaves the same way: a null source
+    // never matches.)
+    const bySource =
+      input.source === null ? null : await this.matchDocumentKey("source = ?", [input.source])
     const now = new Date().toISOString()
+
+    // Past this point the import either claims an adopted document or
+    // creates one. A file that would not parse when the key table was last
+    // rebuilt has no key row, so if it is THIS source's document (or the
+    // adopted copy of this text), neither lookup can see it and the import
+    // would write a duplicate of it. Refused loudly instead, naming the
+    // files, until they are fixed or removed — the next open notices either
+    // and re-reads them (`healKeyTable`). A source that did match above is
+    // safe to update: its document was found.
+    if (!bySource) this.refuseWhileUnreadable()
 
     if (bySource) {
       if (bySource.hash === hash) {
@@ -605,7 +865,9 @@ export class FileStore implements Store {
     // has reappeared with a path. Matching on hash alone there would let a
     // generated overview silently claim a human's adopted document the first
     // time the two happened to produce identical bytes.
-    const adopted = input.generated ? undefined : all.find((d) => d.source === null && d.hash === hash)
+    const adopted = input.generated
+      ? null
+      : await this.matchDocumentKey("source IS NULL AND hash = ?", [hash])
     if (adopted) {
       const { generated: _g2, repo: _r2, ...adoptedRest } = adopted
       const claimed: Document = {
@@ -635,9 +897,26 @@ export class FileStore implements Store {
     return { document: created, outcome: "created" }
   }
 
+  private refuseWhileUnreadable(): void {
+    const rows = this.db.query("SELECT name FROM document_unreadable ORDER BY name").all() as {
+      name: string
+    }[]
+    if (rows.length === 0) return
+    const shown = rows.slice(0, 5).map((r) => r.name).join(", ")
+    const more = rows.length > 5 ? `, and ${rows.length - 5} more` : ""
+    throw new Error(
+      `could not check for an existing document — ${rows.length} document file(s) in ${join(this.root, "documents")} could not be read: ${shown}${more} — fix or remove them, then import again`,
+    )
+  }
+
   private async writeDocument(doc: Document): Promise<void> {
     await writeFile(this.docPath(doc.id), serializeDocument(doc), "utf-8")
     this.indexDocument(doc)
+    this.indexDocumentKey(doc)
+    // See `rebuildKeyTable`: while its read is in flight, THIS row is one a
+    // rebuild's snapshot does not know about yet, so it is recorded here to
+    // be folded back in once that rebuild swaps the table.
+    if (this.rebuildsInFlight > 0) this.pendingRebuildWrites.set(doc.id, doc)
   }
 
   /**
@@ -698,6 +977,7 @@ export class FileStore implements Store {
     if (!found) {
       await unlink(this.docPath(doc.id))
       this.db.run("DELETE FROM documents WHERE id = ?", [doc.id])
+      this.db.run("DELETE FROM document_keys WHERE id = ?", [doc.id])
       throw new Error(unknownClaimMessage(claimId))
     }
     await unlink(found.path)
@@ -737,7 +1017,14 @@ export class FileStore implements Store {
         claims++
       }
     }
-    for (const doc of await this.listDocuments()) {
+    // One `listDocuments()` read, handed to `rebuildKeyTable` rather than
+    // read a second time: its own delete-then-reinsert of `document_keys`
+    // still happens inside one synchronous transaction, same as a heal or a
+    // stale-hit rebuild, so a concurrent `importDocument` never observes the
+    // key table empty while `cairn rebuild` is running.
+    const docs = await this.listDocuments()
+    await this.rebuildKeyTable({ docs, unreadable: [] })
+    for (const doc of docs) {
       this.indexDocument(doc)
       documents++
     }

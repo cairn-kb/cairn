@@ -7,6 +7,7 @@ import { readConfig } from "./config"
 import { TELEMETRY_URL, TIMEOUT_MS } from "./telemetry"
 import { resolveGeneration } from "./generate"
 import { detectAgents, importsAgentsMd, sameFile } from "./init"
+import { INIT_AGENTS } from "./agents"
 import { desktopConfigPath } from "./agents"
 import { readCodexEntry } from "./codex-config"
 import { findRepo } from "./repo"
@@ -204,22 +205,35 @@ export async function checkBinary(deps: DoctorDeps): Promise<CheckResult> {
  * sends the reader in a circle. Named once, so the two checks that can land in this state say
  * the same thing.
  */
-const NO_AGENT_FIX = "install Claude Code, Cursor, Codex or Claude Desktop, or cairn init --project"
+const NO_AGENT_FIX = "install Claude Code, Cursor or Codex, or cairn init --project"
+
+/**
+ * What `cairn init` needs to be told on this machine, or null when there is
+ * nothing for it to configure. Plain `cairn init` configures only the agents
+ * it offers; Claude Desktop is configured only when named, so a machine with
+ * nothing else would otherwise be sent to a command that finds no agent.
+ */
+async function initCommand(deps: DoctorDeps): Promise<string | null> {
+  const found = await detectAgents(deps.home, deps.platform ?? process.platform, deps.appData)
+  if (found.some((a) => INIT_AGENTS.includes(a))) return "cairn init"
+  return found.includes("claude-desktop") ? "cairn init --agents claude-desktop" : null
+}
 
 export async function checkConfig(deps: DoctorDeps): Promise<CheckResult> {
   const found = await findMcpConfig(deps)
   if (!found) {
-    if ((await detectAgents(deps.home)).length === 0) {
+    const init = await initCommand(deps)
+    if (init === null) {
       return {
         name: "config", group: "Agent config", status: "fail",
-        detail: `no supported agent found — looked for ~/.claude, ~/.cursor, ~/.codex and Claude Desktop in ${deps.home}`,
+        detail: `no supported agent found — looked for ~/.claude, ~/.cursor and ~/.codex in ${deps.home}`,
         fix: NO_AGENT_FIX,
       }
     }
     return {
       name: "config", group: "Agent config", status: "fail",
       detail: "no MCP config with a cairn server found",
-      fix: "cairn init",
+      fix: init,
     }
   }
   return {
@@ -811,7 +825,7 @@ export async function checkTelemetry(deps: DoctorDeps): Promise<CheckResult> {
       detail: `no config yet in ${deps.root} — consent has never been asked`,
       // Consent is only recorded by an init run that gets as far as writing,
       // so on a bare machine the plain command is the same dead end again.
-      fix: (await detectAgents(deps.home)).length === 0 ? NO_AGENT_FIX : "cairn init",
+      fix: (await initCommand(deps)) ?? NO_AGENT_FIX,
     }
   }
   if (!cfg.telemetry) {

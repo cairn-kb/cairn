@@ -2,7 +2,7 @@ import { lstat, mkdir, readFile, readlink, realpath, rename, rm, stat, writeFile
 import { basename, dirname, join, resolve } from "node:path"
 import { COMPILED } from "./version"
 import { SEARCH_GUIDANCE } from "./guidance"
-import { desktopConfigPath, detectAgents } from "./agents"
+import { ALL_AGENTS, desktopConfigPath, detectAgents, INIT_AGENTS } from "./agents"
 import { codexBlock, mergeCodexConfig } from "./codex-config"
 import type { Agent } from "./agents"
 
@@ -48,11 +48,24 @@ export interface InitOptions {
   appData?: string
   /**
    * Whether a person is at a terminal running this (no `--yes`). Without one,
-   * project scope leaves the machine-wide Codex and Claude Desktop configs
-   * alone: a script asked to set up one project must not edit files in the
-   * home directory. Defaults to false.
+   * project scope leaves the machine-wide Codex config alone: a script asked
+   * to set up one project must not edit files in the home directory.
+   * Defaults to false.
    */
   interactive?: boolean
+  /**
+   * The agents to configure, chosen by the person — in the picker or with
+   * `--agents`. Configured exactly as given: nothing is left out for being
+   * machine-wide and nothing is assumed, and an agent that is not installed
+   * is configured anyway, because it was asked for by name. Absent, init
+   * configures whichever of `INIT_AGENTS` it detects.
+   */
+  agents?: Agent[]
+  /**
+   * The "Other MCP client" choice: write the shared instructions and print
+   * the server config to paste into a client cairn does not know.
+   */
+  otherClient?: boolean
 }
 
 export interface InitResult {
@@ -243,11 +256,20 @@ export interface InitPlan {
   printOnly: string[]
   warnings: string[]
   /**
-   * Agents that were found but deliberately left unconfigured: Codex and
-   * Claude Desktop on a non-interactive project-scope run, whose configs are
-   * machine-wide.
+   * Agents that were found but deliberately left unconfigured: Codex on a
+   * non-interactive project-scope run, whose config is machine-wide.
    */
   notConfigured: Agent[]
+  /** Whether the "Other MCP client" was chosen. It has no config to prove,
+   *  so it adds nothing to `configs`, and a plan of it alone is still a plan. */
+  otherClient: boolean
+  /**
+   * Whether a `printOnly` note tells the person to paste "the block below" —
+   * true only where no file cairn writes carries the rules. Not the same as
+   * having notes: a note that only hands over a config would otherwise sit
+   * right above the rules, which then read as part of what to paste.
+   */
+  pasteRules: boolean
   /**
    * What the operator still has to do themselves, printed after the write.
    * Distinct from `warnings`, which are about what cairn did: these are the
@@ -287,17 +309,24 @@ function handEdit(path: string, block: string): string {
 export async function planInit(opts: InitOptions): Promise<InitPlan> {
   const { home, cwd, cliPath, scope, bunPath } = opts
   const platform = opts.platform ?? process.platform
-  const found = await detectAgents(home, platform, opts.appData)
+  const chosen = opts.agents
+  const otherClient = opts.otherClient === true
+  // Detected Claude Desktop is not configured by default; see INIT_AGENTS.
+  const found = chosen
+    ? []
+    : (await detectAgents(home, platform, opts.appData)).filter((a) => INIT_AGENTS.includes(a))
   const printOnly: string[] = []
   const warnings: string[] = []
   const nextSteps: string[] = []
 
-  // Project scope from a script edits the project and nothing else. Codex and
-  // Claude Desktop keep one config for every project, in the home directory,
-  // so they are configured by a person at a terminal or by --global.
+  // Project scope from a script edits the project and nothing else. Codex
+  // keeps one config for every project, in the home directory, so it is
+  // configured by a person at a terminal, by --global, or by naming it.
   const notConfigured =
     scope === "project" && opts.interactive !== true ? found.filter((a) => MACHINE_WIDE.includes(a)) : []
-  const detected = found.filter((a) => !notConfigured.includes(a))
+  const detected = chosen
+    ? ALL_AGENTS.filter((a) => chosen.includes(a))
+    : found.filter((a) => !notConfigured.includes(a))
 
   // Detection looks at the home directory, but project scope writes
   // <cwd>/.mcp.json and the instructions file — paths whose correctness has
@@ -306,7 +335,7 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
   // ~/.claude yet, a container, a checkout whose agent config lives elsewhere.
   // Global scope keeps the gate, because the files it writes ARE the agent's
   // own and inventing one there configures software that is not installed.
-  const assumed = detected.length === 0 && scope === "project" && opts.writeWithoutAgent === true
+  const assumed = !chosen && detected.length === 0 && scope === "project" && opts.writeWithoutAgent === true
   let agents: Agent[] = assumed ? ["claude"] : detected
   if (assumed) {
     warnings.push(
@@ -339,6 +368,7 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
   const pending: { path: string; content: string }[] = []
   const configs: { agent: Agent; path: string }[] = []
   const gitignore: string[] = []
+  let pasteRules = false
 
   if (agents.includes("claude")) {
     const cfg = scope === "global" ? join(home, ".claude.json") : join(cwd, ".mcp.json")
@@ -370,6 +400,7 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
       printOnly.push(
         "Cursor keeps user rules in its settings, not a file — paste the block below into Cursor → Settings → Rules.",
       )
+      pasteRules = true
     }
     // Printed only when Cursor is actually present: a Claude-Code-only machine
     // cannot open a `cursor://` URL and should not be handed one.
@@ -394,9 +425,13 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
     }
   }
 
-  // Claude Desktop likewise has only an app-wide config. Detection found the
-  // directory holding it, so the path cannot be null here.
+  // Claude Desktop likewise has only an app-wide config. It is only here when
+  // asked for by name, so the platform may give it no known path at all.
   const desktopCfg = desktopConfigPath(home, platform, opts.appData)
+  if (agents.includes("claude-desktop") && !desktopCfg) {
+    warnings.push("Claude Desktop has no known config location on this machine — skipped it.")
+    agents = agents.filter((a) => a !== "claude-desktop")
+  }
   let desktopContent: string | null = null
   if (agents.includes("claude-desktop") && desktopCfg) {
     try {
@@ -413,12 +448,31 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
       "Claude Desktop has no instructions file — paste the block below into a Claude project's " +
         "instructions (Projects → your project → Instructions).",
     )
+    pasteRules = true
     // Closing the window leaves the app running, and it reads its MCP config
     // only at launch — so the new server does not appear until a real restart.
     nextSteps.push("Quit Claude Desktop completely (Cmd+Q, or Quit from its tray icon) and reopen it to load cairn.")
   }
 
-  if (agents.length > 0) {
+  // The other MCP client is told where cairn is, and nothing more: cairn
+  // knows nothing about its config, so there is nothing to write or prove.
+  if (otherClient) {
+    printOnly.push(
+      "For another MCP client, add this server to its MCP config:\n\n" +
+        JSON.stringify({ mcpServers: { cairn: entry } }, null, 2),
+    )
+    // Project scope gives it the shared instructions file below; global scope
+    // has none, so it gets the block to paste.
+    if (scope === "global") {
+      printOnly.push(
+        "Another MCP client has no shared instructions file at global scope — paste the block below " +
+          "into its instructions.",
+      )
+      pasteRules = true
+    }
+  }
+
+  if (agents.length > 0 || otherClient) {
     const instructions =
       scope === "global" ? join(home, ".claude", "CLAUDE.md") : await resolveInstructionFile(cwd)
     // Global scope has no shared instructions file for Cursor, so only write
@@ -475,7 +529,7 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
   }
 
   return {
-    agents, scope, changes: pending, configs, printOnly, warnings, notConfigured, nextSteps,
+    agents, scope, changes: pending, configs, printOnly, warnings, notConfigured, otherClient, pasteRules, nextSteps,
     instructions: RULES_BLOCK,
   }
 }
