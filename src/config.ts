@@ -164,6 +164,37 @@ export async function readConfig(root: string): Promise<CairnConfig | null> {
 }
 
 /**
+ * Applies a focused patch to the config on disk, re-reading it immediately
+ * before writing so a caller that held a config snapshot across a slow
+ * `await` — a telemetry POST, say — cannot clobber a field it does not own
+ * with that stale snapshot. `patch` is handed the FRESH read and returns only
+ * the field(s) this caller is responsible for; everything else in the fresh
+ * read is carried through untouched. Returning null skips the write
+ * entirely — for when the caller's precondition no longer holds by the time
+ * it gets to write (e.g. someone else already recorded the same thing).
+ *
+ * This narrows the race to the gap between this read and this write — one
+ * synchronous patch call, no I/O in between — rather than closing it
+ * outright; a true lock would need more than this file format offers. Two
+ * callers each following this pattern and owning disjoint fields is the
+ * guarantee it actually provides, and the one `sendTelemetry` and
+ * `recordSearchHit` need.
+ *
+ * A missing or unreadable config is a no-op, matching `readConfig`'s own
+ * "report, don't die on it" rule — there is nothing to patch.
+ */
+export async function updateConfig(
+  root: string,
+  patch: (latest: CairnConfig) => Partial<CairnConfig> | null,
+): Promise<void> {
+  const latest = await readConfig(root)
+  if (!latest) return
+  const partial = patch(latest)
+  if (partial === null) return
+  await writeConfig(root, { ...latest, ...partial })
+}
+
+/**
  * Written atomically at 0600, because this file can hold an API key.
  *
  * The mode is applied when the temp file is CREATED, not after the rename —

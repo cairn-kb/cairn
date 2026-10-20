@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { newConfig, readConfig, writeConfig } from "../src/config"
+import { recordSearchHit } from "../src/first-answer-metric"
 import type { Stats } from "@cairn-kb/protocol/stats"
 import {
   buildPayload,
@@ -274,6 +275,36 @@ test("a failed send never marks firstAnswerReported", async () => {
   })
   expect(outcome).toBe("failed")
   expect((await readConfig(root))!.firstAnswerReported).toBe(false)
+})
+
+test("a search hit recorded while a ping is in flight survives the ping's own write", async () => {
+  // sendTelemetry reads the config, then awaits the POST (here held open by
+  // `gate`), then writes back lastSentAt/firstAnswerReported. A
+  // `recordSearchHit` landing in that window must not be wiped by the ping
+  // writing back its own stale, pre-fetch snapshot of the config.
+  await writeConfig(root, { ...newConfig(true), initCompletedAt: new Date(T).toISOString() })
+  let release: (() => void) | undefined
+  const gate = new Promise<void>((resolve) => { release = resolve })
+
+  const sent = sendTelemetry({
+    root, version: "0.4.3", platform: "darwin-arm64", stats: async () => stats(),
+    now: T,
+    fetchImpl: async () => {
+      await gate
+      return new Response("{}", { status: 200 })
+    },
+  })
+
+  // The ping has already read the config (synchronously, before its first
+  // await) and is now blocked on the POST. An agent's search hit lands here.
+  await recordSearchHit(root, 1, T + 7 * MIN)
+  release!()
+  const outcome = await sent
+
+  expect(outcome).toBe("sent")
+  const cfg = await readConfig(root)
+  expect(cfg?.firstAnswerAt).toBe(new Date(T + 7 * MIN).toISOString())
+  expect(cfg?.lastSentAt).toBe(new Date(T).toISOString())
 })
 
 // --- the consent screen renders the real payload -------------------------

@@ -1,4 +1,4 @@
-import { readConfig, writeConfig } from "./config"
+import { updateConfig } from "./config"
 import type { CairnConfig } from "./config"
 
 const MIN_MS = 60_000
@@ -48,15 +48,22 @@ export function firstAnswerBucket(cfg: CairnConfig, now: number): FirstAnswer | 
  * Records only the FIRST qualifying hit — a later call with `initCompletedAt`
  * already answered leaves `firstAnswerAt` alone — and only with consent:
  * nothing is stored for a telemetry-off install.
+ *
+ * Owns exactly one field, `firstAnswerAt`, through `updateConfig` — never a
+ * hand-written `writeConfig` of a snapshot read earlier — so this cannot
+ * land between `sendTelemetry`'s own read and write and have its answer
+ * overwritten by that stale copy, nor restore a `lastSentAt`/
+ * `firstAnswerReported` that a concurrent ping already advanced.
  */
 export async function recordSearchHit(root: string, hits: number, now: number = Date.now()): Promise<void> {
   if (hits < 1) return
   try {
-    const cfg = await readConfig(root)
-    if (!cfg || cfg.telemetry !== true) return
-    if (cfg.initCompletedAt === null) return
-    if (cfg.firstAnswerAt !== null) return
-    await writeConfig(root, { ...cfg, firstAnswerAt: new Date(now).toISOString() })
+    await updateConfig(root, (latest) => {
+      if (latest.telemetry !== true) return null
+      if (latest.initCompletedAt === null) return null
+      if (latest.firstAnswerAt !== null) return null
+      return { firstAnswerAt: new Date(now).toISOString() }
+    })
   } catch {
     // Deliberately total — see above.
   }

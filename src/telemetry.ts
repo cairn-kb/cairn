@@ -1,4 +1,4 @@
-import { newConfig, readConfig, writeConfig } from "./config"
+import { newConfig, readConfig, updateConfig } from "./config"
 import type { CairnConfig } from "./config"
 import { firstAnswerBucket } from "./first-answer-metric"
 import type { FirstAnswer } from "./first-answer-metric"
@@ -178,14 +178,18 @@ export async function sendTelemetry(deps: TelemetryDeps): Promise<TelemetryOutco
       signal: AbortSignal.timeout(deps.timeoutMs ?? TIMEOUT_MS),
     })
     if (!res.ok) return "failed"
-    await writeConfig(deps.root, {
-      ...config,
+    // `updateConfig`, not a `writeConfig` of the `config` read above: that
+    // read happened before this function's one `await` on the network call,
+    // and a `recordSearchHit` landing during that wait must not be wiped by
+    // writing back this stale snapshot. This owns exactly `lastSentAt` and
+    // `firstAnswerReported`, re-reading fresh right before the write.
+    await updateConfig(deps.root, (latest) => ({
       lastSentAt: new Date(now).toISOString(),
       // Only when the sent payload actually carried the bucket — this is
       // what makes the report go out exactly once, rather than retried
       // forever or marked done before it was ever said.
-      firstAnswerReported: config.firstAnswerReported || payload.firstAnswer !== undefined,
-    })
+      firstAnswerReported: latest.firstAnswerReported || payload.firstAnswer !== undefined,
+    }))
     return "sent"
   } catch {
     // Deliberately total. Anything that reaches here — an unreadable event
