@@ -42,7 +42,7 @@ buddy watching.
 ## Weeks two to four
 
 - Pair with a different teammate each week on whatever they are working on.
-- Sit in on the on-call handoff call each week, even before you shadow.
+- Sit in on the on-call hand-over call each week, even before you shadow.
 - Shadow two on-call shifts: you are added as a third responder, you see
   every alert, and you follow the primary through anything that happens.
 - Read every runbook, and run the steps of one against staging.

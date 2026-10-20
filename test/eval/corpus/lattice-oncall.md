@@ -11,13 +11,13 @@ The rotation is weekly. There is a primary and a secondary each week; the
 secondary is the previous week's primary, so the second line always knows
 what happened in the last seven days.
 
-The handoff happens on Wednesdays at 11:00 UTC, in a short call with the
+The hand-over happens on Wednesdays at 11:00 UTC, in a short call with the
 outgoing and incoming primary. The outgoing primary walks through open
 incidents, alerts that fired and were silenced, anything paused, and any
 tenant that has been in touch. The notes go in the on-call log at the top of
 #lattice-eng.
 
-Wednesday was chosen so that a handoff never lands next to the weekend deploy
+Wednesday was chosen so that a hand-over never lands next to the weekend deploy
 freeze or on a Monday after one.
 
 Swaps are fine. Arrange them with a teammate and update the schedule in
