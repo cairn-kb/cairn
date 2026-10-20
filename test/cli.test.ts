@@ -1581,6 +1581,17 @@ test("the file list is previewed before the consent prompt", async () => {
   expect(seenAtPrompt.join("\n")).toContain(join(initProject, ".mcp.json"))
 })
 
+test("a --yes run previews and writes the CLAUDE.md that imports AGENTS.md", async () => {
+  // Part of making the project config work for Claude Code, not an
+  // interactive extra — so a scripted run does it too, and says so first.
+  const lines: string[] = []
+  const outcome = await runInitCommand(await initDeps({ interactive: false, out: (line) => lines.push(line) }))
+  expect(outcome).toBe("written")
+  expect(lines.join("\n")).toContain(join(initProject, "CLAUDE.md"))
+  expect(await readFile(join(initProject, "CLAUDE.md"), "utf-8")).toBe("@AGENTS.md\n")
+  expect(await readFile(join(initProject, "CLAUDE.md"), "utf-8")).not.toContain("<!-- cairn:start -->")
+})
+
 test("answering the consent prompt writes both the agent config and config.json", async () => {
   // The control: without it, a runInitCommand that wrote nothing at all would
   // pass every cancel test above.

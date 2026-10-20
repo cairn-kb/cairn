@@ -6,7 +6,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { readConfig } from "./config"
 import { TELEMETRY_URL, TIMEOUT_MS } from "./telemetry"
 import { resolveGeneration } from "./generate"
-import { detectAgents } from "./init"
+import { detectAgents, importsAgentsMd } from "./init"
 import { desktopConfigPath } from "./agents"
 import { readCodexEntry } from "./codex-config"
 import { findRepo } from "./repo"
@@ -361,6 +361,17 @@ export async function checkInstructions(
   deps: DoctorDeps,
   configPath?: string,
 ): Promise<CheckResult> {
+  const hasBlock = async (path: string) =>
+    (await readFile(path, "utf-8").catch(() => "")).includes("<!-- cairn:start -->")
+  // How `cairn init` reaches Claude Code when the block lives in AGENTS.md.
+  const claudeMd = join(deps.cwd, "CLAUDE.md")
+  const agentsMd = join(deps.cwd, "AGENTS.md")
+  if (importsAgentsMd(await readFile(claudeMd, "utf-8").catch(() => "")) && (await hasBlock(agentsMd))) {
+    return {
+      name: "instructions", group: "Agent config", status: "ok",
+      detail: `${claudeMd} imports ${agentsMd}, which has the cairn instructions block`,
+    }
+  }
   const candidates = [
     join(deps.cwd, "AGENTS.md"),
     join(deps.cwd, "CLAUDE.md"),
