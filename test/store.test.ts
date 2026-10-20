@@ -206,6 +206,36 @@ test("rebuildIndex reindexes documents as well as claims", async () => {
   expect((await store.searchDocuments("findable")).map((d) => d.id)).toEqual([document.id])
 })
 
+// --- a generated write must not adopt an unrelated human document ---------
+//
+// Adoption exists so re-importing the same file after `adoptImport` claims
+// the sourceless document in place rather than duplicating it (see
+// test/store-contract.ts). A generated write's text happening to hash the
+// same as some unrelated sourceless document must not let it silently take
+// that document over — it is an agent's overview, not the human's file
+// reappearing.
+
+test("a generated write creates its own document rather than adopting an unrelated sourceless one", async () => {
+  const { document: human } = await store.importDocument({
+    title: "Human notes",
+    text: "identical text",
+    source: null,
+  })
+  const { document: generated, outcome } = await store.importDocument({
+    title: "Generated overview",
+    text: "identical text",
+    source: "generated:app/architecture",
+    generated: true,
+    repo: "app",
+  })
+  expect(outcome).toBe("created")
+  expect(generated.id).not.toBe(human.id)
+  expect((await store.listDocuments()).length).toBe(2)
+  const refreshedHuman = await store.getDocument(human.id)
+  expect(refreshedHuman?.source).toBeNull()
+  expect(refreshedHuman?.generated ?? false).toBe(false)
+})
+
 // --- adoptImport coverage the generic Store contract cannot exercise ------
 //
 // Both tests below need a real filesystem underneath the seam — one corrupts

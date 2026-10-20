@@ -993,6 +993,35 @@ test("kbWriteDocument refuses a repo containing a path separator, naming the fie
   ).rejects.toThrow(/repo/)
 })
 
+// `repo` is a label an agent was given, not a path segment it invents, and is
+// compared by string equality rather than joined onto a filesystem path (see
+// `taggedFields` in src/store.ts) — so it is allowed the shape of an actual
+// repository name, wider than `slug`'s.
+test("kbWriteDocument accepts a repo with dots, underscores and mixed case", async () => {
+  const out = await tools.kbWriteDocument({
+    repo: "My.Repo_1",
+    slug: "x",
+    title: "t",
+    text: "t",
+    agent: "cursor",
+  })
+  expect(out.outcome).toBe("created")
+  const doc = await store.getDocument(out.id)
+  expect(doc?.repo).toBe("My.Repo_1")
+})
+
+test("kbWriteDocument refuses a slug over 64 characters, naming the field", async () => {
+  await expect(
+    tools.kbWriteDocument({ repo: "app", slug: "a".repeat(65), title: "t", text: "t", agent: "cursor" }),
+  ).rejects.toThrow(/slug/)
+})
+
+test("kbWriteDocument refuses a repo over 100 characters, naming the field", async () => {
+  await expect(
+    tools.kbWriteDocument({ repo: "a".repeat(101), slug: "x", title: "t", text: "t", agent: "cursor" }),
+  ).rejects.toThrow(/repo/)
+})
+
 test("kbWriteDocument refuses an empty title, naming the field", async () => {
   await expect(
     tools.kbWriteDocument({ repo: "app", slug: "x", title: "  ", text: "t", agent: "cursor" }),
@@ -1057,5 +1086,40 @@ test("onSearchResult is called with the hit count, from the server handler only"
 
   await client.callTool({ name: "team_knowledge_search", arguments: { query: "Quetzalcoatl" } })
   expect(seen).toEqual([1])
+  await client.close()
+})
+
+test("team_knowledge_search still returns hits when onSearchResult rejects", async () => {
+  await store.importDocument({ title: "d", text: "Quetzalcoatl", source: "d.md" })
+  const server = createMcpServer(store, log, {
+    onSearchResult: async () => {
+      throw new Error("hook failed")
+    },
+  })
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  const client = new Client({ name: "test-client", version: "0.0.0" })
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+
+  const result = await client.callTool({ name: "team_knowledge_search", arguments: { query: "Quetzalcoatl" } })
+  expect(result.isError).toBeFalsy()
+  const parsed = JSON.parse((result.content as { text: string }[])[0]!.text) as { hits: unknown[] }
+  expect(parsed.hits.length).toBe(1)
+  await client.close()
+})
+
+test("team_knowledge_search still returns hits when onSearchResult throws synchronously", async () => {
+  await store.importDocument({ title: "d", text: "Quetzalcoatl", source: "d.md" })
+  const throwsSync = (() => {
+    throw new Error("sync fail")
+  }) as unknown as (hits: number) => Promise<void>
+  const server = createMcpServer(store, log, { onSearchResult: throwsSync })
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  const client = new Client({ name: "test-client", version: "0.0.0" })
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+
+  const result = await client.callTool({ name: "team_knowledge_search", arguments: { query: "Quetzalcoatl" } })
+  expect(result.isError).toBeFalsy()
+  const parsed = JSON.parse((result.content as { text: string }[])[0]!.text) as { hits: unknown[] }
+  expect(parsed.hits.length).toBe(1)
   await client.close()
 })
