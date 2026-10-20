@@ -975,7 +975,11 @@ export class FileStore implements Store {
    * replaced per claim and per document, never wiped wholesale, so a write
    * another process made after the snapshot was read survives it:
    *   - an entry whose file changed since it was read is skipped, because
-   *     whoever changed it indexes the new version themselves;
+   *     whoever changed it indexes the new version themselves -- unless it
+   *     has no rows at all. Not every writer is cairn: a hand edit, a
+   *     checkout or a sync tool indexes nothing, and an upgrade has just
+   *     dropped the passage tables. Stale rows beat none, and a cairn writer
+   *     replaces them;
    *   - rows are removed only for a claim or document whose file is gone.
    */
   private writeSnapshot(snap: Snapshot): void {
@@ -983,7 +987,7 @@ export class FileStore implements Store {
     for (const { claim, path, mtimeMs } of snap.claims) {
       claimIds.add(claim.id)
       const now = mtimeOf(path)
-      if (now === mtimeMs) this.index(claim)
+      if (now === mtimeMs || (now !== null && !this.claimIndexed(claim.id))) this.index(claim)
       else if (now === null && !this.claimFileExists(claim.id)) this.db.run("DELETE FROM claims WHERE id = ?", [claim.id])
     }
     for (const { id } of this.db.query("SELECT DISTINCT id FROM claims").all() as { id: string }[]) {
@@ -993,12 +997,20 @@ export class FileStore implements Store {
     for (const { doc, passages, mtimeMs } of snap.documents) {
       docIds.add(doc.id)
       const now = mtimeOf(this.docPath(doc.id))
-      if (now === mtimeMs) this.writePassages(doc, passages)
+      if (now === mtimeMs || (now !== null && !this.documentIndexed(doc.id))) this.writePassages(doc, passages)
       else if (now === null) this.unindexDocument(doc.id)
     }
     for (const { doc } of this.db.query("SELECT DISTINCT doc FROM passage_meta").all() as { doc: string }[]) {
       if (!docIds.has(doc) && !existsSync(this.docPath(doc))) this.unindexDocument(doc)
     }
+  }
+
+  private claimIndexed(id: string): boolean {
+    return this.db.query("SELECT 1 FROM claims WHERE id = ? LIMIT 1").get(id) !== null
+  }
+
+  private documentIndexed(id: string): boolean {
+    return this.db.query("SELECT 1 FROM passage_meta WHERE doc = ? LIMIT 1").get(id) !== null
   }
 
   private claimFileExists(id: string): boolean {

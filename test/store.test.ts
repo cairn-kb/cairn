@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, mkdtemp, rename, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { notAdoptableMessage } from "@cairn-kb/protocol/event-kinds"
@@ -588,6 +588,37 @@ test("an upgrade another process finished first is not written over", async () =
     })
     await slow.init()
     expect((await slow.searchPassages("avocet")).hits.length).toBe(1)
+  } finally {
+    await rm(old, { recursive: true, force: true })
+  }
+})
+
+test("an upgrade indexes a file touched between its read and its write rather than leave it out", async () => {
+  const old = await mkdtemp(join(tmpdir(), "cairn-touched-index-"))
+  try {
+    const seed = new FileStore(old, new EventLog(old))
+    await seed.init()
+    const { document } = await seed.importDocument({ title: "Touched", text: "the dunlin note", source: "t.md" })
+    const claim = await seed.propose(proposal("the sanderling claim"))
+    // Back to an index from before passages, with the claim row gone too, so
+    // both halves start with nothing for the upgrade to keep.
+    const db = (seed as unknown as { db: Database }).db
+    db.run("DELETE FROM claims")
+    db.run("DROP TABLE passages")
+    db.run("DROP TABLE passage_meta")
+    db.run("PRAGMA user_version = 0")
+
+    // Not a cairn writer: a hand edit, a checkout or a sync tool touching the
+    // files after the upgrade read them. Nobody will index them afterwards.
+    const later = new Date(Date.now() + 60_000)
+    const upgrading = new FileStore(old, new EventLog(old))
+    betweenSnapshotAndWrite(upgrading, async () => {
+      await utimes(join(old, "documents", `${document.id}.md`), later, later)
+      await utimes(join(old, "inbox", `${claim.id}.md`), later, later)
+    })
+    await upgrading.init()
+    expect((await upgrading.searchPassages("dunlin")).hits.map((h) => h.doc)).toEqual([document.id])
+    expect((await upgrading.search("sanderling")).map((c) => c.id)).toEqual([claim.id])
   } finally {
     await rm(old, { recursive: true, force: true })
   }
