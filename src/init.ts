@@ -1,7 +1,8 @@
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { COMPILED } from "./version"
-import { detectAgents } from "./agents"
+import { desktopConfigPath, detectAgents } from "./agents"
+import { mergeCodexConfig } from "./codex-config"
 import type { Agent } from "./agents"
 
 export type { Agent } from "./agents"
@@ -38,6 +39,10 @@ export interface InitOptions {
    * detection is the wrong thing to gate that on.
    */
   writeWithoutAgent?: boolean
+  /** Which platform's Claude Desktop config path to use. Defaults to this one. */
+  platform?: NodeJS.Platform
+  /** `%APPDATA%`, which Claude Desktop's config path is under on Windows. */
+  appData?: string
 }
 
 export interface InitResult {
@@ -200,12 +205,13 @@ export function cursorInstallLink(entry: McpServerEntry, name = "cairn"): string
 
 export async function planInit(opts: InitOptions): Promise<InitPlan> {
   const { home, cwd, cliPath, scope, bunPath } = opts
-  const detected = await detectAgents(home)
+  const platform = opts.platform ?? process.platform
+  const detected = await detectAgents(home, platform, opts.appData)
   const printOnly: string[] = []
   const warnings: string[] = []
   const nextSteps: string[] = []
 
-  // Detection looks at ~/.claude and ~/.cursor, but project scope writes
+  // Detection looks at the home directory, but project scope writes
   // <cwd>/.mcp.json and the instructions file — paths whose correctness has
   // nothing to do with the home directory. Gating them on a bare home refused
   // setups that would have worked: a Claude Code install that has not created
@@ -277,6 +283,26 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
     nextSteps.push(`One-click install for Cursor: ${cursorInstallLink(entry)}`)
   }
 
+  // Codex has one config for every project, so it is written at either scope.
+  if (agents.includes("codex")) {
+    const cfg = join(home, ".codex", "config.toml")
+    pending.push({ path: cfg, content: mergeCodexConfig(await read(cfg), entry) })
+  }
+
+  // Claude Desktop likewise has only an app-wide config. Detection found the
+  // directory holding it, so the path cannot be null here.
+  const desktopCfg = desktopConfigPath(home, platform, opts.appData)
+  if (agents.includes("claude-desktop") && desktopCfg) {
+    pending.push({ path: desktopCfg, content: mergeMcpConfig(await read(desktopCfg), entry) })
+    printOnly.push(
+      "Claude Desktop has no instructions file — paste the block below into a Claude project's " +
+        "instructions (Projects → your project → Instructions).",
+    )
+    // Closing the window leaves the app running, and it reads its MCP config
+    // only at launch — so the new server does not appear until a real restart.
+    nextSteps.push("Quit Claude Desktop completely (Cmd+Q, or Quit from its tray icon) and reopen it to load cairn.")
+  }
+
   if (agents.length > 0) {
     const instructions =
       scope === "global" ? join(home, ".claude", "CLAUDE.md") : await resolveInstructionFile(cwd)
@@ -284,6 +310,15 @@ export async function planInit(opts: InitOptions): Promise<InitPlan> {
     // one when Claude Code is present; project scope shares AGENTS.md.
     if (scope === "project" || agents.includes("claude")) {
       pending.push({ path: instructions, content: upsertBlock(await read(instructions), RULES_BLOCK) })
+    }
+    // Codex reads ~/.codex/AGENTS.md everywhere and a project's AGENTS.md, but
+    // not CLAUDE.md. So the global file carries the rules at global scope, and
+    // at project scope only when the project's file is one Codex never reads —
+    // otherwise Codex would read the same rules twice.
+    // <https://developers.openai.com/codex/guides/agents-md>
+    if (agents.includes("codex") && (scope === "global" || basename(instructions) !== "AGENTS.md")) {
+      const codexMd = join(home, ".codex", "AGENTS.md")
+      pending.push({ path: codexMd, content: upsertBlock(await read(codexMd), RULES_BLOCK) })
     }
   }
 
