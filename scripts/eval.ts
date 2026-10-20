@@ -78,16 +78,33 @@ function checkCorpusCommit(dirs: string[], pinned: string | null, corpusAt: stri
           ` — check out ${want}, or pass --corpus-at ${want}`,
       )
     }
+    // Read from the working tree, the corpus is HEAD only if nothing in it is
+    // uncommitted; otherwise the edits would be measured as the pinned commit.
+    if (corpusAt === undefined) {
+      const status = git(dir, ["status", "--porcelain", "--", "."])
+      if (!status.ok) throw new Error(`cannot check ${dir} for uncommitted changes: ${status.err}`)
+      if (status.out !== "") {
+        throw new Error(
+          `${dir} has uncommitted changes, so it is not corpus commit ${want}` +
+            ` — commit or discard them, or pass --corpus-at ${want}`,
+        )
+      }
+    }
   }
 }
 
 /** `dir` as it was at `rev`, extracted into `into`. */
 async function corpusAtCommit(dir: string, rev: string, into: string): Promise<string> {
+  // Run from the top of the repository: from a subdirectory, `git archive`
+  // also limits the archive to that path, which inside `rev:prefix` is a path
+  // that does not exist.
+  const top = git(dir, ["rev-parse", "--show-toplevel"])
+  if (!top.ok) throw new Error(`${dir} is not in a git repository: ${top.err}`)
   const prefix = git(dir, ["rev-parse", "--show-prefix"]).out
   const out = join(into, "tree")
   await mkdir(out, { recursive: true })
   const tar = join(into, "corpus.tar")
-  const archived = git(dir, ["archive", "--format=tar", "-o", tar, `${rev}:${prefix}`])
+  const archived = git(top.out, ["archive", "--format=tar", "-o", tar, `${rev}:${prefix}`])
   if (!archived.ok) throw new Error(`cannot read ${dir} at ${rev}: ${archived.err}`)
   await Bun.$`tar -xf ${tar} -C ${out}`.quiet()
   return out
@@ -99,7 +116,7 @@ async function corpusAtCommit(dir: string, rev: string, into: string): Promise<s
 async function refuseCollisions(dirs: string[]): Promise<void> {
   const owner = new Map<string, string>()
   for (const dir of dirs) {
-    for await (const path of new Bun.Glob("**/*.md").scan({ cwd: dir })) {
+    for await (const path of new Bun.Glob("**/*.md").scan({ cwd: dir, dot: true })) {
       const other = owner.get(path)
       if (other !== undefined) throw new Error(`${other} and ${dir} both hold ${path}; give one corpus a subdirectory`)
       owner.set(path, dir)

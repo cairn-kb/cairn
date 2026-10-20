@@ -20,13 +20,18 @@ export interface EvalEnv {
   memo<T>(key: string, build: () => Promise<T>): Promise<T>
 }
 
-export interface Strategy {
-  id: string
+/** What a strategy hands back for one question, from one search. */
+export interface Retrieval {
   /** Everything the agent would read for this question, as one string. */
-  context(q: Question, env: EvalEnv): Promise<string>
+  context: string
   /** The texts of the passages (or documents) it ranked, best first. Recall@6
    *  and MRR read this; a strategy without it reports neither. */
-  ranked?(q: Question, env: EvalEnv): Promise<string[]>
+  ranked?: string[]
+}
+
+export interface Strategy {
+  id: string
+  retrieve(q: Question, env: EvalEnv): Promise<Retrieval>
 }
 
 /** How deep `doc-bm25` ranks for recall@6 and MRR. */
@@ -53,7 +58,7 @@ async function rankDocuments(q: Question, env: EvalEnv, limit: number): Promise<
   if (match === null) return []
   const { db, byId } = await docIndex(env)
   const rows = db
-    .query<{ id: string }, [string, number]>("SELECT id FROM docs WHERE docs MATCH ? ORDER BY bm25(docs) LIMIT ?")
+    .query<{ id: string }, [string, number]>("SELECT id FROM docs WHERE docs MATCH ? ORDER BY bm25(docs), title, id LIMIT ?")
     .all(match, limit)
   return rows.map((r) => byId.get(r.id)).filter((d): d is Document => d !== undefined)
 }
@@ -61,11 +66,15 @@ async function rankDocuments(q: Question, env: EvalEnv, limit: number): Promise<
 /** The top two documents read in full. */
 const docBm25: Strategy = {
   id: "doc-bm25",
-  async context(q, env) {
-    return (await rankDocuments(q, env, 2)).map((d) => d.text).join("\n\n")
-  },
-  async ranked(q, env) {
-    return (await rankDocuments(q, env, RANK_DEPTH)).map((d) => d.text)
+  async retrieve(q, env) {
+    const docs = await rankDocuments(q, env, RANK_DEPTH)
+    return {
+      context: docs
+        .slice(0, 2)
+        .map((d) => d.text)
+        .join("\n\n"),
+      ranked: docs.map((d) => d.text),
+    }
   },
 }
 

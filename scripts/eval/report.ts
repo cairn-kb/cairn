@@ -39,16 +39,21 @@ export async function score(strategy: Strategy, questions: Question[], env: Eval
   let facts = 0
   let within6 = 0
   let reciprocal = 0
+  // A strategy that ranks for some questions and not others has no
+  // comparable recall or MRR, so one unranked answer withholds both.
+  let unranked = false
   for (const q of questions) {
-    const context = await strategy.context(q, env)
+    const { context, ranked: texts } = await strategy.retrieve(q, env)
     tokens += countTokens(context)
     if (answerable(context, q.facts)) {
       ok++
       if (q.held_out) heldOut++
       if (q.hop === 2) multiHop++
     }
-    if (strategy.ranked) {
-      const ranked = (await strategy.ranked(q, env)).map(normalise)
+    if (texts === undefined) {
+      unranked = true
+    } else {
+      const ranked = texts.map(normalise)
       for (const f of q.facts) {
         facts++
         const r = rankOf(ranked, f)
@@ -57,7 +62,7 @@ export async function score(strategy: Strategy, questions: Question[], env: Eval
       }
     }
   }
-  const ranks = strategy.ranked !== undefined && facts > 0
+  const ranks = !unranked && facts > 0
   return {
     answerable: ok,
     held_out: heldOut,
